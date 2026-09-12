@@ -1,0 +1,4 @@
+KiriPad Phase 1 starter kit
+Original scaffold generated for the user.
+No Kirikiri engine source or commercial game data is bundled.
+External projects are fetched only by optional scripts and retain their own licenses.
