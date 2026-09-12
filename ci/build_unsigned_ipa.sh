@@ -34,12 +34,30 @@ xcodebuild \
   CODE_SIGN_IDENTITY="" \
   build
 
-APP_PATH="$DERIVED_DATA/Build/Products/Release-iphoneos/KiriPad.app"
-if [[ ! -d "$APP_PATH" ]]; then
-  echo "error: app bundle not found: $APP_PATH" >&2
-  find "$DERIVED_DATA/Build/Products" -maxdepth 3 -type d -name '*.app' -print || true
+APP_PATH=""
+for candidate in \
+  "$DERIVED_DATA/Build/Products/Release-iphoneos/KiriPad.app" \
+  "$BUILD_DIR/Release-iphoneos/KiriPad.app"; do
+  if [[ -d "$candidate" ]]; then
+    APP_PATH="$candidate"
+    break
+  fi
+done
+
+if [[ -z "$APP_PATH" ]]; then
+  APP_PATH=$(find "$DERIVED_DATA" "$BUILD_DIR" -type d -name 'KiriPad.app' -print -quit 2>/dev/null || true)
+fi
+
+if [[ -z "$APP_PATH" || ! -d "$APP_PATH" ]]; then
+  echo "error: KiriPad.app was not found after a successful Xcode build." >&2
+  echo "Searched under:" >&2
+  echo "  $DERIVED_DATA" >&2
+  echo "  $BUILD_DIR" >&2
+  find "$DERIVED_DATA" "$BUILD_DIR" -maxdepth 5 -type d -name '*.app' -print 2>/dev/null || true
   exit 1
 fi
+
+printf 'Found app bundle:\n  %s\n' "$APP_PATH"
 
 cp -R "$APP_PATH" "$ARTIFACT_DIR/KiriPad.app"
 mkdir -p "$ARTIFACT_DIR/Payload"
