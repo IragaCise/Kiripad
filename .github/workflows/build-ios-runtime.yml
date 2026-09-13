@@ -1,4 +1,4 @@
-name: Build KiriPad Phase 2A.28.1 Startup Bytecode Probe
+name: Build KiriPad Phase 2A.29 Startup Bytecode Disassembly
 
 on:
   workflow_dispatch:
@@ -1244,6 +1244,77 @@ jobs:
           print(patched[max(0, p-2400):p+6600])
           PY
 
+      - name: Dump startup.tjs bytecode disassembly before execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd .engine-src/KrKr2-Next
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path("cpp/core/tjs2/tjsScriptCache.cpp")
+          text = path.read_text(encoding="utf-8")
+
+          marker = "KiriPad 2A.29 startup bytecode disassembly begin"
+          if marker in text:
+              raise SystemExit("2A.29 disassembly patch already present unexpectedly")
+
+          # Scope the insertion to tTJSScriptCache::LoadByteCode, then place it
+          # immediately after a successfully decoded ScriptBlock is confirmed.
+          fn = re.search(
+              r'void\s+tTJSScriptCache::LoadByteCode\s*\('
+              r'.*?'
+              r'\n\s*\}\s*'
+              r'(?=\n\s*//[-]+)',
+              text,
+              re.S,
+          )
+          if not fn:
+              # Fallback: locate function start and a bounded source window.
+              start = text.find("tTJSScriptCache::LoadByteCode")
+              if start >= 0:
+                  print("===== LoadByteCode source window =====")
+                  print(text[max(0, start-500):start+2600])
+              raise SystemExit("tTJSScriptCache::LoadByteCode function not found")
+
+          body = fn.group(0)
+          rx_if = re.compile(r'(?P<indent>[ \t]*)if\s*\(\s*blk\s*!=\s*nullptr\s*\)\s*\{')
+          m = rx_if.search(body)
+          if not m:
+              print("===== LoadByteCode body =====")
+              print(body)
+              raise SystemExit("blk != nullptr insertion point not found")
+
+          indent = m.group("indent") + "    "
+          block = (
+              "\n"
+              + indent + 'if(name && ttstr(name) == ttstr(TJS_W("startup.tjs"))) {\n'
+              + indent + '    Owner->OutputToConsole(TJS_W("(info) KiriPad 2A.29 startup bytecode disassembly begin"));\n'
+              + indent + "    blk->Dump();\n"
+              + indent + '    Owner->OutputToConsole(TJS_W("(info) KiriPad 2A.29 startup bytecode disassembly end"));\n'
+              + indent + "}\n"
+          )
+
+          insert_at = fn.start() + m.end()
+          text = text[:insert_at] + block + text[insert_at:]
+          path.write_text(text, encoding="utf-8")
+
+          patched = path.read_text(encoding="utf-8")
+          for token in (
+              "KiriPad 2A.29 startup bytecode disassembly begin",
+              "blk->Dump();",
+              "KiriPad 2A.29 startup bytecode disassembly end",
+          ):
+              if token not in patched:
+                  raise SystemExit(f"2A.29 verification failed: {token}")
+
+          p = patched.index("KiriPad 2A.29 startup bytecode disassembly begin")
+          print("Installed Phase 2A.29 bytecode disassembly trace.")
+          print("===== patched source window =====")
+          print(patched[max(0, p-1200):p+1800])
+          PY
+
       - name: Configure and build upstream iOS engine only
         shell: bash
         run: |
@@ -1869,7 +1940,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A281-runtime-build-logs
+          name: KiriPad-Phase2A29-runtime-build-logs
           path: artifacts/runtime-build-logs
           if-no-files-found: warn
           retention-days: 14
@@ -1878,7 +1949,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A281-runtime-unsigned-ipa
+          name: KiriPad-Phase2A29-runtime-unsigned-ipa
           path: artifacts/KiriPad-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
@@ -1887,7 +1958,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A281-runtime-source-info
+          name: KiriPad-Phase2A29-runtime-source-info
           path: artifacts/runtime-source-info
           if-no-files-found: warn
           retention-days: 14
