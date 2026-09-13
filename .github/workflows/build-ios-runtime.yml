@@ -1,4 +1,4 @@
-name: Build KiriPad Phase 2A.4 Runtime
+name: Build KiriPad Phase 2A.5 Runtime
 
 on:
   workflow_dispatch:
@@ -91,6 +91,103 @@ jobs:
           git rev-parse HEAD | tee ../../engine-commit.txt
           printf 'Source: https://github.com/reAAAq/KrKr2-Next\nRef: %s\nCommit: %s\n' \
             "${{ inputs.engine_ref }}" "$(git rev-parse HEAD)" > ../../engine-source.txt
+
+      - name: Patch optional Live2D out for Phase 2A
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd .engine-src/KrKr2-Next
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          # Phase 2A targets Sanoba Witch first.  Upstream currently creates a
+          # CubismFramework target even when the proprietary Cubism Core / full
+          # Native SDK is not present, which makes CMake generation fail before
+          # the ordinary KiriKiri engine can be built.  Temporarily remove the
+          # optional Live2D plugin and keep the rest of the engine intact.
+          cmake = Path("cpp/plugins/CMakeLists.txt")
+          text = cmake.read_text(encoding="utf-8")
+          lines = text.splitlines(keepends=True)
+          out = []
+          i = 0
+          removed = []
+          commands = {
+              "add_library", "target_link_libraries", "target_include_directories",
+              "target_compile_definitions", "set_target_properties",
+              "target_compile_options", "target_sources"
+          }
+          while i < len(lines):
+              line = lines[i]
+              m = re.match(r"^\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*\\(", line)
+              if m and m.group(1).lower() in commands:
+                  block = line
+                  depth = line.count("(") - line.count(")")
+                  j = i + 1
+                  while depth > 0 and j < len(lines):
+                      block += lines[j]
+                      depth += lines[j].count("(") - lines[j].count(")")
+                      j += 1
+                  if "CubismFramework" in block:
+                      removed.append(block.rstrip())
+                      i = j
+                      continue
+              if "krkrlive2d.cpp" in line:
+                  replaced = line.replace("krkrlive2d.cpp", "")
+                  removed.append(line.rstrip())
+                  if replaced.strip() and replaced.strip() not in {"", ")"}:
+                      out.append(replaced)
+                  elif replaced.strip() == ")":
+                      out.append(replaced)
+                  i += 1
+                  continue
+              out.append(line)
+              i += 1
+          cmake.write_text("".join(out), encoding="utf-8")
+
+          # Remove the unconditional Live2D registration call from engine_api.
+          api = Path("bridge/engine_api/src/engine_api.cpp")
+          if api.exists():
+              a = api.read_text(encoding="utf-8")
+              new_lines = []
+              for line in a.splitlines(keepends=True):
+                  if "TVPRegisterKrkrLive2DPluginAnchor" in line:
+                      removed.append(line.rstrip())
+                      continue
+                  new_lines.append(line)
+              api.write_text("".join(new_lines), encoding="utf-8")
+
+          # krkrgles has one shared render-target symbol normally defined by
+          # krkrlive2d.cpp.  Convert its local extern declaration to a zero-
+          # initialized definition so the non-Live2D renderer still links.
+          ogl = Path("cpp/plugins/krkrgles.cpp")
+          if ogl.exists():
+              o = ogl.read_text(encoding="utf-8")
+              pat = re.compile(
+                  r"(?m)^(\\s*)extern\\s+([^;\\n]+?)\\s+g_live2dRenderTarget\\s*;\\s*$"
+              )
+              o2, n = pat.subn(
+                  lambda m: f"{m.group(1)}{m.group(2)} g_live2dRenderTarget{{}}; // KiriPad Phase 2A: Live2D disabled",
+                  o,
+                  count=1,
+              )
+              if n:
+                  o = o2
+              else:
+                  print("warning: no extern g_live2dRenderTarget declaration found in krkrgles.cpp")
+              ogl.write_text(o, encoding="utf-8")
+
+          print("===== Phase 2A Live2D patch =====")
+          for item in removed:
+              print("REMOVED:", item[:500])
+          print("===== remaining Live2D/Cubism references =====")
+          for p in [cmake, api, ogl]:
+              if not p.exists():
+                  continue
+              for no, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
+                  if any(x in line for x in ("CubismFramework", "krkrlive2d", "TVPRegisterKrkrLive2DPluginAnchor", "g_live2dRenderTarget")):
+                      print(f"{p}:{no}: {line}")
+          PY
 
       - name: Configure and build upstream iOS engine only
         shell: bash
@@ -244,7 +341,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A4-runtime-build-logs
+          name: KiriPad-Phase2A5-runtime-build-logs
           path: artifacts/runtime-build-logs
           if-no-files-found: warn
           retention-days: 14
@@ -253,7 +350,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A4-runtime-unsigned-ipa
+          name: KiriPad-Phase2A5-runtime-unsigned-ipa
           path: artifacts/KiriPad-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
