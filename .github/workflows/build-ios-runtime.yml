@@ -1,4 +1,4 @@
-name: Build KiriPad Phase 2A.18 Initialize TJS Diagnostics
+name: Build KiriPad Phase 2A.19 Script Execution Trace
 
 on:
   workflow_dispatch:
@@ -650,6 +650,188 @@ jobs:
           print(patched[wrapper2:managed2 + len(managed_line) + 300])
           PY
 
+      - name: Instrument TJS storage execution trace
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd .engine-src/KrKr2-Next
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path("cpp/core/base/ScriptMgnIntf.cpp")
+          text = path.read_text(encoding="utf-8")
+
+          m = re.search(
+              r'void\s+TVPExecuteStorage\s*\(\s*const\s+ttstr\s*&name\s*,\s*'
+              r'iTJSDispatch2\s*\*context\s*,\s*tTJSVariant\s*\*result\s*,\s*'
+              r'bool\s+isexpression\s*,\s*const\s+tjs_char\s*\*\s*modestr\s*\)\s*\{',
+              text,
+              re.S,
+          )
+          if not m:
+              raise SystemExit("TVPExecuteStorage(context) function not found")
+
+          # Find the matching closing brace for this overload.
+          open_brace = text.find("{", m.start())
+          depth = 0
+          end = None
+          for i in range(open_brace, len(text)):
+              c = text[i]
+              if c == "{":
+                  depth += 1
+              elif c == "}":
+                  depth -= 1
+                  if depth == 0:
+                      end = i + 1
+                      break
+          if end is None:
+              raise SystemExit("Could not find end of TVPExecuteStorage(context)")
+
+          seg = text[m.start():end]
+
+          init = "if(!TVPScriptEngine) TVPThrowInternalError;"
+          if init not in seg:
+              raise SystemExit("TVPExecuteStorage engine guard not found")
+          seg = seg.replace(
+              init,
+              init + r'''
+              TVPAddImportantLog(
+                  TJS_W("(info) KiriPad 2A.19 TVPExecuteStorage begin: ") + name);''',
+              1,
+          )
+
+          load = "isbytecode = TVPScriptEngine->LoadByteCode( stream, result, context, shortname.c_str() );"
+          if load not in seg:
+              raise SystemExit("LoadByteCode probe line not found")
+          seg = seg.replace(
+              load,
+              r'''TVPAddImportantLog(
+                      TJS_W("(info) KiriPad 2A.19 LoadByteCode probe: ") + shortname);
+                  isbytecode = TVPScriptEngine->LoadByteCode(
+                      stream, result, context, shortname.c_str());
+                  if(isbytecode)
+                      TVPAddImportantLog(
+                          TJS_W("(info) KiriPad 2A.19 bytecode accepted: ") + shortname);
+                  else
+                      TVPAddImportantLog(
+                          TJS_W("(info) KiriPad 2A.19 bytecode rejected; text fallback: ") + shortname);''',
+              1,
+          )
+
+          # Add a name-bearing log if the bytecode loader throws.
+          catch_pat = re.compile(
+              r'}\s*catch\(\.\.\.\)\s*\{\s*delete\s+stream;\s*throw;\s*\}',
+              re.S,
+          )
+          cm = catch_pat.search(seg)
+          if not cm:
+              raise SystemExit("LoadByteCode catch block not found")
+          seg = seg[:cm.start()] + r'''} catch(...) {
+                  TVPAddImportantLog(
+                      TJS_W("(info) KiriPad 2A.19 LoadByteCode EXCEPTION: ") + shortname);
+                  delete stream;
+                  throw;
+              }''' + seg[cm.end():]
+
+          textstream = "iTJSTextReadStream * stream = TVPCreateTextStreamForRead(place, modestr);"
+          if textstream not in seg:
+              raise SystemExit("Text stream creation line not found")
+          seg = seg.replace(
+              textstream,
+              r'''TVPAddImportantLog(
+                  TJS_W("(info) KiriPad 2A.19 text read begin: ") + shortname);
+              iTJSTextReadStream * stream = TVPCreateTextStreamForRead(place, modestr);''',
+              1,
+          )
+
+          # Replace the final ExecScript/EvalExpression block with traced execution.
+          block_pat = re.compile(
+              r'if\(TVPScriptEngine\)\s*\{\s*'
+              r'if\(!isexpression\)\s*'
+              r'TVPScriptEngine->ExecScript\(\s*buffer,\s*result,\s*context,\s*&shortname\s*\);\s*'
+              r'else\s*'
+              r'TVPScriptEngine->EvalExpression\(\s*buffer,\s*result,\s*context,\s*&shortname\s*\);\s*'
+              r'\}',
+              re.S,
+          )
+          bm = block_pat.search(seg)
+          if not bm:
+              raise SystemExit("ExecScript/EvalExpression block not found")
+
+          traced_exec = r'''if(TVPScriptEngine)
+              {
+                  TVPAddImportantLog(
+                      TJS_W("(info) KiriPad 2A.19 text execute begin: ") + shortname);
+                  try
+                  {
+                      if(!isexpression)
+                          TVPScriptEngine->ExecScript(buffer, result, context, &shortname);
+                      else
+                          TVPScriptEngine->EvalExpression(buffer, result, context, &shortname);
+                  }
+                  catch(...)
+                  {
+                      TVPAddImportantLog(
+                          TJS_W("(info) KiriPad 2A.19 text execute EXCEPTION: ") + shortname);
+                      throw;
+                  }
+                  TVPAddImportantLog(
+                      TJS_W("(info) KiriPad 2A.19 text execute end: ") + shortname);
+              }'''
+          seg = seg[:bm.start()] + traced_exec + seg[bm.end():]
+
+          text = text[:m.start()] + seg + text[end:]
+
+          # Also trace the direct TVPExecuteBytecode entry point.
+          bytecode_sig = re.search(
+              r'void\s+TVPExecuteBytecode\s*\([^)]*\)\s*\{',
+              text,
+              re.S,
+          )
+          if bytecode_sig:
+              bo = text.find("{", bytecode_sig.start())
+              depth = 0
+              be = None
+              for i in range(bo, len(text)):
+                  if text[i] == "{":
+                      depth += 1
+                  elif text[i] == "}":
+                      depth -= 1
+                      if depth == 0:
+                          be = i + 1
+                          break
+              if be:
+                  bseg = text[bytecode_sig.start():be]
+                  guard = "if(!TVPScriptEngine) TVPThrowInternalError;"
+                  if guard in bseg and "KiriPad 2A.19 TVPExecuteBytecode" not in bseg:
+                      bseg = bseg.replace(
+                          guard,
+                          guard + r'''
+              TVPAddImportantLog(
+                  TJS_W("(info) KiriPad 2A.19 TVPExecuteBytecode begin"));''',
+                          1,
+                      )
+                      text = text[:bytecode_sig.start()] + bseg + text[be:]
+
+          path.write_text(text, encoding="utf-8")
+
+          patched = path.read_text(encoding="utf-8")
+          required = (
+              "KiriPad 2A.19 TVPExecuteStorage begin:",
+              "KiriPad 2A.19 LoadByteCode probe:",
+              "KiriPad 2A.19 LoadByteCode EXCEPTION:",
+              "KiriPad 2A.19 text execute begin:",
+              "KiriPad 2A.19 text execute EXCEPTION:",
+              "KiriPad 2A.19 text execute end:",
+          )
+          for token in required:
+              if token not in patched:
+                  raise SystemExit(f"Script execution trace verification failed: {token}")
+
+          print("Installed Phase 2A.19 ScriptMgnIntf execution trace.")
+          PY
+
       - name: Configure and build upstream iOS engine only
         shell: bash
         run: |
@@ -1275,7 +1457,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A18-runtime-build-logs
+          name: KiriPad-Phase2A19-runtime-build-logs
           path: artifacts/runtime-build-logs
           if-no-files-found: warn
           retention-days: 14
@@ -1284,7 +1466,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A18-runtime-unsigned-ipa
+          name: KiriPad-Phase2A19-runtime-unsigned-ipa
           path: artifacts/KiriPad-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
@@ -1293,7 +1475,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A18-runtime-source-info
+          name: KiriPad-Phase2A19-runtime-source-info
           path: artifacts/runtime-source-info
           if-no-files-found: warn
           retention-days: 14
