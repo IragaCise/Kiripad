@@ -1,4 +1,4 @@
-name: Build KiriPad Phase 2A.19.2 Minimal Script Trace
+name: Build KiriPad Phase 2A.19.3 Storage Entry Trace
 
 on:
   workflow_dispatch:
@@ -650,7 +650,7 @@ jobs:
           print(patched[wrapper2:managed2 + len(managed_line) + 300])
           PY
 
-      - name: Instrument minimal TJS storage trace
+      - name: Instrument minimal storage-entry trace
         shell: bash
         run: |
           set -euo pipefail
@@ -676,79 +676,36 @@ jobs:
           if open_brace < 0:
               raise SystemExit("TVPExecuteStorage(context) opening brace not found")
 
-          depth = 0
-          func_end = None
-          for i in range(open_brace, len(text)):
-              if text[i] == "{":
-                  depth += 1
-              elif text[i] == "}":
-                  depth -= 1
-                  if depth == 0:
-                      func_end = i + 1
-                      break
-          if func_end is None:
-              raise SystemExit("TVPExecuteStorage(context) closing brace not found")
+          marker = 'KiriPad 2A.19.3 TVPExecuteStorage: '
+          if marker in text:
+              raise SystemExit("2A.19.3 marker already present unexpectedly")
 
-          seg = text[sig.start():func_end]
-
-          print("===== ORIGINAL TVPExecuteStorage(context) =====")
-          print(seg)
-          print("===== END ORIGINAL =====")
-
-          # Mandatory, minimal trace: record every storage requested.
-          local_open = seg.find("{", sig.end() - sig.start())
-          entry = r'''
+          # Deliberately insert ONLY one standalone statement at function entry.
+          # Do not alter initializers, if/else bodies, stream expressions, or
+          # bytecode handling.
+          inject = r'''
               TVPAddImportantLog(
-                  TJS_W("(info) KiriPad 2A.19.2 TVPExecuteStorage: ") + name);
+                  TJS_W("(info) KiriPad 2A.19.3 TVPExecuteStorage: ") + name);
           '''
-          seg = seg[:local_open + 1] + entry + seg[local_open + 1:]
-
-          # Optional trace points.  Do not fail the workflow if this fork uses
-          # a different bytecode/text-loading implementation.
-          if "TVPCreateTextStreamForRead" in seg:
-              seg = seg.replace(
-                  "TVPCreateTextStreamForRead",
-                  'TVPAddImportantLog(TJS_W("(info) KiriPad 2A.19.2 text stream: ") + name), TVPCreateTextStreamForRead',
-                  1,
-              )
-
-          # Add a log immediately before script execution if this overload
-          # contains an ExecScript call.  Keep original control flow intact.
-          exec_pos = seg.find("TVPScriptEngine->ExecScript")
-          if exec_pos >= 0:
-              seg = (
-                  seg[:exec_pos]
-                  + 'TVPAddImportantLog(TJS_W("(info) KiriPad 2A.19.2 ExecScript: ") + name);\n              '
-                  + seg[exec_pos:]
-              )
-
-          eval_pos = seg.find("TVPScriptEngine->EvalExpression")
-          if eval_pos >= 0:
-              seg = (
-                  seg[:eval_pos]
-                  + 'TVPAddImportantLog(TJS_W("(info) KiriPad 2A.19.2 EvalExpression: ") + name);\n              '
-                  + seg[eval_pos:]
-              )
-
-          # If this fork does expose a LoadByteCode call, log before it, but
-          # don't require it to exist.
-          bc_pos = seg.find("LoadByteCode")
-          if bc_pos >= 0:
-              line_start = seg.rfind("\n", 0, bc_pos) + 1
-              seg = (
-                  seg[:line_start]
-                  + '              TVPAddImportantLog(TJS_W("(info) KiriPad 2A.19.2 LoadByteCode path: ") + name);\n'
-                  + seg[line_start:]
-              )
-
-          text = text[:sig.start()] + seg + text[func_end:]
+          text = text[:open_brace + 1] + inject + text[open_brace + 1:]
           path.write_text(text, encoding="utf-8")
 
           patched = path.read_text(encoding="utf-8")
-          if "KiriPad 2A.19.2 TVPExecuteStorage:" not in patched:
-              raise SystemExit("Minimal storage trace verification failed")
+          if marker not in patched:
+              raise SystemExit("Storage-entry trace verification failed")
 
-          print("Installed Phase 2A.19.2 minimal storage trace.")
+          # Print only a small source window around the injected code so a
+          # future compiler error can be diagnosed without guessing.
+          pos = patched.index(marker)
+          line_no = patched[:pos].count("\n") + 1
+          lines = patched.splitlines()
+          lo = max(0, line_no - 8)
+          hi = min(len(lines), line_no + 12)
+          print("===== 2A.19.3 patched ScriptMgnIntf.cpp window =====")
+          for n in range(lo, hi):
+              print(f"{n+1:5d}: {lines[n]}")
+          print("===== end window =====")
+          print("Installed Phase 2A.19.3 storage-entry trace.")
           PY
 
       - name: Configure and build upstream iOS engine only
@@ -1376,7 +1333,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A19_2-runtime-build-logs
+          name: KiriPad-Phase2A19_3-runtime-build-logs
           path: artifacts/runtime-build-logs
           if-no-files-found: warn
           retention-days: 14
@@ -1385,7 +1342,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A19_2-runtime-unsigned-ipa
+          name: KiriPad-Phase2A19_3-runtime-unsigned-ipa
           path: artifacts/KiriPad-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
@@ -1394,7 +1351,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A19_2-runtime-source-info
+          name: KiriPad-Phase2A19_3-runtime-source-info
           path: artifacts/runtime-source-info
           if-no-files-found: warn
           retention-days: 14
