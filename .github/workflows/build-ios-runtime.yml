@@ -31,14 +31,38 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Ensure Ninja is available
+      - name: Install upstream build prerequisites
         shell: bash
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
         run: |
-          if ! command -v ninja >/dev/null 2>&1; then
-            brew install ninja
-          fi
-          flutter --version
+          set -euo pipefail
+
+          # KrKr2-Next uses vcpkg host tools while cross-compiling for iOS.
+          # gperf's current vcpkg port requires GNU autotools on macOS, and
+          # the upstream CMake configuration uses Ninja.
+          brew install ninja autoconf automake autoconf-archive
+
+          BREW_PREFIX="$(brew --prefix)"
+          echo "$BREW_PREFIX/bin" >> "$GITHUB_PATH"
+          echo "ACLOCAL_PATH=$BREW_PREFIX/share/aclocal" >> "$GITHUB_ENV"
+
+          # Make the tools visible in this step as well as all following steps.
+          export PATH="$BREW_PREFIX/bin:$PATH"
+          export ACLOCAL_PATH="$BREW_PREFIX/share/aclocal${ACLOCAL_PATH:+:$ACLOCAL_PATH}"
+          hash -r
+
+          echo "Homebrew prefix: $BREW_PREFIX"
+          echo "PATH: $PATH"
+          command -v ninja
           ninja --version
+          command -v autoconf
+          autoconf --version | head -n 1
+          command -v automake
+          automake --version | head -n 1
+          command -v aclocal
+          aclocal --version | head -n 1
+          flutter --version
 
       - name: Cache vcpkg binary archives
         uses: actions/cache@v4
@@ -63,6 +87,20 @@ jobs:
       - name: Build upstream iOS engine archives
         shell: bash
         run: |
+          # Reassert Homebrew paths here so vcpkg/CMake subprocesses can see
+          # the host build tools even if the runner image PATH changes.
+          BREW_PREFIX="$(brew --prefix)"
+          export PATH="$BREW_PREFIX/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+          export ACLOCAL_PATH="$BREW_PREFIX/share/aclocal${ACLOCAL_PATH:+:$ACLOCAL_PATH}"
+          hash -r
+
+          echo "Build prerequisite check:"
+          command -v cmake && cmake --version | head -n 1
+          command -v ninja && ninja --version
+          command -v autoconf && autoconf --version | head -n 1
+          command -v automake && automake --version | head -n 1
+          command -v aclocal && aclocal --version | head -n 1
+
           set +e
           cd .engine-src/KrKr2-Next
           bash ./build.sh ios release --jobs=4
