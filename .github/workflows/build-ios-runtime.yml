@@ -1,4 +1,4 @@
-name: Build KiriPad Phase 2A.9.1 Verify Fix
+name: Build KiriPad Phase 2A.10 XP3 Parent Fix
 
 on:
   workflow_dispatch:
@@ -201,7 +201,7 @@ jobs:
           text = path.read_text(encoding="utf-8")
 
           old = "if(!_utf8_strcasecmp(actualPrefix.c_str(), dir.c_str())) {"
-          new = "if(!_utf8_strcasecmp_nfc(actualPrefix.c_str(), dir.c_str())) { // KiriPad Phase 2A.9: retain iOS sandbox prefix case/Unicode recovery"
+          new = "if(!_utf8_strcasecmp_nfc(actualPrefix.c_str(), dir.c_str())) { // KiriPad Phase 2A.10: retain iOS sandbox prefix case/Unicode recovery"
 
           count = text.count(old)
           if count != 1:
@@ -219,6 +219,63 @@ jobs:
           print("Patched iOS sandbox prefix comparison:")
           for no, line in enumerate(text.splitlines(), 1):
               if "actualPrefix.c_str(), dir.c_str()" in line:
+                  print(f"{path}:{no}: {line}")
+          PY
+
+      - name: Patch iOS AutoMountXP3 parent directory recovery
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd .engine-src/KrKr2-Next
+          python3 - <<'PY'
+          from pathlib import Path
+          
+          path = Path("cpp/core/base/impl/StorageImpl.cpp")
+          text = path.read_text(encoding="utf-8")
+          marker = '    spdlog::info("AutoMountXP3: nativeParent={}", parentPath);'
+          if text.count(marker) != 1:
+              print(f"Expected exactly one AutoMountXP3 nativeParent marker, found {text.count(marker)}")
+              pos = text.find('AutoMountXP3: nativeParent=')
+              if pos >= 0:
+                  print(text[max(0, pos-1800):pos+1800])
+              raise SystemExit(1)
+          
+          patch = """#if defined(__APPLE__) && TARGET_OS_IPHONE
+              // KiriPad Phase 2A.10: TVPProjectDir is normalized to lowercase for the
+              // storage namespace, but the iOS sandbox path is case-sensitive.
+              // AutoMountXP3 asks for the parent of the game root (Documents/), which is
+              // shorter than _getHomeDir()[0] (Documents/<game>/), so the ordinary
+              // GetLocallyAccessibleName prefix recovery cannot restore its real case.
+              // Recover that parent from the already-known real game home path before
+              // opendir(), so data.xp3 and sibling XP3 archives can be found.
+              {
+                  const auto &kiripadHomeDirs = _getHomeDir();
+                  for(const auto &kiripadHome : kiripadHomeDirs) {
+                      std::string realHome = kiripadHome;
+                      while(realHome.size() > 1 && realHome.back() == '/')
+                          realHome.pop_back();
+                      const auto slash = realHome.find_last_of('/');
+                      if(slash == std::string::npos)
+                          continue;
+                      std::string realParent = realHome.substr(0, slash + 1);
+                      std::string candidate = parentPath;
+                      if(candidate.empty() || candidate.back() != '/')
+                          candidate.push_back('/');
+                      if(!_utf8_strcasecmp_nfc(candidate.c_str(), realParent.c_str())) {
+                          spdlog::info("AutoMountXP3: KiriPad iOS parent recovery {} -> {}", parentPath, realParent);
+                          parentPath = realParent;
+                          break;
+                      }
+                  }
+              }
+          #endif
+          """
+          text = text.replace(marker, patch + marker, 1)
+          path.write_text(text, encoding="utf-8")
+          
+          print("Inserted KiriPad iOS AutoMountXP3 parent recovery:")
+          for no, line in enumerate(text.splitlines(), 1):
+              if "KiriPad iOS parent recovery" in line or "AutoMountXP3: nativeParent" in line:
                   print(f"{path}:{no}: {line}")
           PY
 
@@ -353,7 +410,7 @@ jobs:
           cp "$ENGINE/bridge/flutter_engine_bridge/ios/Libs/libengine_vendors.a" Vendor/KrKr2Next/Libs/
           ls -lh Vendor/KrKr2Next/Libs/*.a
 
-      - name: Force-install Phase 2A.9 main-thread runtime host
+      - name: Force-install Phase 2A.10 main-thread runtime host
         shell: bash
         run: |
           set -euo pipefail
@@ -504,7 +561,7 @@ jobs:
           }
           
           - (void)stopOnOwnerThread {
-              NSAssert(NSThread.isMainThread, @"KrKr2 engine owner thread must be the main thread in Phase 2A.9");
+              NSAssert(NSThread.isMainThread, @"KrKr2 engine owner thread must be the main thread in Phase 2A.10");
               if (_displayLink) {
                   [_displayLink invalidate];
                   _displayLink = nil;
@@ -530,24 +587,25 @@ jobs:
               uint32_t startupState = ENGINE_STARTUP_STATE_IDLE;
               const auto stateResult = engine_get_startup_state(_engine, &startupState);
               if (stateResult != ENGINE_RESULT_OK) {
-                  [self notifyLog:[NSString stringWithFormat:@"\n[Phase2A.9] engine_get_startup_state error=%d: %@\n", (int)stateResult, [self lastEngineError]]];
+                  [self notifyLog:[NSString stringWithFormat:@"\n[Phase2A.10] engine_get_startup_state error=%d: %@\n", (int)stateResult, [self lastEngineError]]];
                   [self stopOnOwnerThread];
                   return;
               }
           
               if (startupState == ENGINE_STARTUP_STATE_FAILED) {
-                  [self notifyLog:[NSString stringWithFormat:@"\n[Phase2A.9] startup FAILED: %@\n", [self lastEngineError]]];
+                  [self notifyLog:[NSString stringWithFormat:@"\n[Phase2A.10] startup FAILED (state=%u, tick=%d): %@\n", startupState, (int)tickResult, [self lastEngineError]]];
+                  [self captureFrameIfAvailable];
                   [self stopOnOwnerThread];
                   return;
               }
           
               if (startupState == ENGINE_STARTUP_STATE_SUCCEEDED && !_startupSuccessLogged) {
                   _startupSuccessLogged = YES;
-                  [self notifyLog:@"\n[Phase2A.9] startup SUCCEEDED — entering frame loop\n"];
+                  [self notifyLog:@"\n[Phase2A.10] startup SUCCEEDED — entering frame loop\n"];
               }
           
               if (tickResult != ENGINE_RESULT_OK && tickResult != ENGINE_RESULT_INVALID_STATE) {
-                  [self notifyLog:[NSString stringWithFormat:@"\n[Phase2A.9] engine_tick error=%d: %@\n", (int)tickResult, [self lastEngineError]]];
+                  [self notifyLog:[NSString stringWithFormat:@"\n[Phase2A.10] engine_tick error=%d: %@\n", (int)tickResult, [self lastEngineError]]];
               }
               [self captureFrameIfAvailable];
           }
@@ -563,10 +621,10 @@ jobs:
           #else
               // KrKr2-Next engine_api binds an engine handle to the exact OS thread that
               // called engine_create().  A serial GCD queue is NOT enough: GCD may run
-              // successive blocks on different worker threads.  Phase 2A.9 therefore
+              // successive blocks on different worker threads.  Phase 2A.10 therefore
               // owns the engine on UIKit's main thread and drives it with CADisplayLink.
               if (!NSThread.isMainThread) {
-                  if (error) *error = [NSError errorWithDomain:KiriPadRuntimeErrorDomain code:4 userInfo:@{NSLocalizedDescriptionKey:@"KiriPad Phase 2A.9 はメインスレッドから起動する必要があります。"}];
+                  if (error) *error = [NSError errorWithDomain:KiriPadRuntimeErrorDomain code:4 userInfo:@{NSLocalizedDescriptionKey:@"KiriPad Phase 2A.10 はメインスレッドから起動する必要があります。"}];
                   return NO;
               }
               if (!gameRoot.isFileURL) {
@@ -588,13 +646,13 @@ jobs:
               [fm createDirectoryAtPath:cachePath withIntermediateDirectories:YES attributes:nil error:nil];
           
               [self notifyRunning:YES];
-              [self notifyLog:[NSString stringWithFormat:@"\n[Phase2A.9] backend: %@\n[Phase2A.9] owner thread: main=%@\n[Phase2A.9] opening: %@\n", [EngineRuntimeHost backendDescription], NSThread.isMainThread ? @"YES" : @"NO", rootPath]];
+              [self notifyLog:[NSString stringWithFormat:@"\n[Phase2A.10] backend: %@\n[Phase2A.10] owner thread: main=%@\n[Phase2A.10] opening: %@\n", [EngineRuntimeHost backendDescription], NSThread.isMainThread ? @"YES" : @"NO", rootPath]];
           
               uint32_t runtimeVersion = 0;
               auto versionResult = engine_get_runtime_api_version(&runtimeVersion);
               if (versionResult != ENGINE_RESULT_OK || (runtimeVersion >> 24u) != (ENGINE_API_VERSION >> 24u)) {
                   if (error) *error = [NSError errorWithDomain:KiriPadRuntimeErrorDomain code:5 userInfo:@{NSLocalizedDescriptionKey:@"engine ABI mismatch"}];
-                  [self notifyLog:[NSString stringWithFormat:@"[Phase2A.9] engine ABI mismatch: runtime=0x%08x expected=0x%08x\n", runtimeVersion, ENGINE_API_VERSION]];
+                  [self notifyLog:[NSString stringWithFormat:@"[Phase2A.10] engine ABI mismatch: runtime=0x%08x expected=0x%08x\n", runtimeVersion, ENGINE_API_VERSION]];
                   [self stopOnOwnerThread];
                   return NO;
               }
@@ -607,21 +665,21 @@ jobs:
               auto createResult = engine_create(&desc, &_engine);
               if (createResult != ENGINE_RESULT_OK || !_engine) {
                   if (error) *error = [NSError errorWithDomain:KiriPadRuntimeErrorDomain code:6 userInfo:@{NSLocalizedDescriptionKey:@"engine_create failed"}];
-                  [self notifyLog:[NSString stringWithFormat:@"[Phase2A.9] engine_create failed: %d\n", (int)createResult]];
+                  [self notifyLog:[NSString stringWithFormat:@"[Phase2A.10] engine_create failed: %d\n", (int)createResult]];
                   [self stopOnOwnerThread];
                   return NO;
               }
           
               auto surfaceResult = engine_set_surface_size(_engine, 1280, 720);
               if (surfaceResult != ENGINE_RESULT_OK) {
-                  [self notifyLog:[NSString stringWithFormat:@"[Phase2A.9] engine_set_surface_size warning: %d / %@\n", (int)surfaceResult, [self lastEngineError]]];
+                  [self notifyLog:[NSString stringWithFormat:@"[Phase2A.10] engine_set_surface_size warning: %d / %@\n", (int)surfaceResult, [self lastEngineError]]];
               }
           
               auto openResult = engine_open_game_async(_engine, rootPath.UTF8String, nullptr);
               if (openResult != ENGINE_RESULT_OK) {
                   NSString *detail = [self lastEngineError];
                   if (error) *error = [NSError errorWithDomain:KiriPadRuntimeErrorDomain code:7 userInfo:@{NSLocalizedDescriptionKey:detail ?: @"engine_open_game_async failed"}];
-                  [self notifyLog:[NSString stringWithFormat:@"[Phase2A.9] engine_open_game_async failed: %d / %@\n", (int)openResult, detail]];
+                  [self notifyLog:[NSString stringWithFormat:@"[Phase2A.10] engine_open_game_async failed: %d / %@\n", (int)openResult, detail]];
                   [self stopOnOwnerThread];
                   return NO;
               }
@@ -672,7 +730,7 @@ jobs:
               event.button = 0;
               const auto inputResult = engine_send_input(_engine, &event);
               if (inputResult != ENGINE_RESULT_OK && inputResult != ENGINE_RESULT_INVALID_STATE) {
-                  [self notifyLog:[NSString stringWithFormat:@"\n[Phase2A.9] engine_send_input error=%d: %@\n", (int)inputResult, [self lastEngineError]]];
+                  [self notifyLog:[NSString stringWithFormat:@"\n[Phase2A.10] engine_send_input error=%d: %@\n", (int)inputResult, [self lastEngineError]]];
               }
           #else
               (void)type; (void)x; (void)y; (void)pointerID;
@@ -690,7 +748,7 @@ jobs:
           @end
           OBJC
           echo "===== KiriPad runtime host verification ====="
-          grep -nF "[Phase2A.9] owner thread: main=" App/EngineRuntimeHost.mm
+          grep -nF "[Phase2A.10] owner thread: main=" App/EngineRuntimeHost.mm
           if grep -qF "dispatch_queue_create(\"dev.kiripad.engine\"" App/EngineRuntimeHost.mm; then
             echo "ERROR: legacy serial-GCD engine owner code is still present"
             exit 1
@@ -719,13 +777,13 @@ jobs:
           # a successful marker match look like a failed pipeline.
           STRINGS_DUMP="$RUNNER_TEMP/kiripad-runtime-strings.txt"
           strings "$APP_BIN" > "$STRINGS_DUMP"
-          if ! grep -Fq "[Phase2A.9] owner thread: main=" "$STRINGS_DUMP"; then
-            echo "ERROR: built IPA does not contain the Phase 2A.9 runtime-host marker"
+          if ! grep -Fq "[Phase2A.10] owner thread: main=" "$STRINGS_DUMP"; then
+            echo "ERROR: built IPA does not contain the Phase 2A.10 runtime-host marker"
             echo "Nearby Phase2A markers found in executable:"
             grep -F "Phase2A" "$STRINGS_DUMP" | head -n 40 || true
             exit 1
           fi
-          echo "Phase 2A.9 runtime-host marker confirmed in built executable."
+          echo "Phase 2A.10 runtime-host marker confirmed in built executable."
 
       - name: Collect source metadata
         if: always()
@@ -741,7 +799,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A9-runtime-build-logs
+          name: KiriPad-Phase2A10-runtime-build-logs
           path: artifacts/runtime-build-logs
           if-no-files-found: warn
           retention-days: 14
@@ -750,7 +808,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A9-runtime-unsigned-ipa
+          name: KiriPad-Phase2A10-runtime-unsigned-ipa
           path: artifacts/KiriPad-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
@@ -759,7 +817,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A9-runtime-source-info
+          name: KiriPad-Phase2A10-runtime-source-info
           path: artifacts/runtime-source-info
           if-no-files-found: warn
           retention-days: 14
