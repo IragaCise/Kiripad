@@ -1,4 +1,4 @@
-name: Build KiriPad Phase 2A.27 Startup Source Probe
+name: Build KiriPad Phase 2A.28 Startup Bytecode Probe
 
 on:
   workflow_dispatch:
@@ -1009,7 +1009,7 @@ jobs:
           print(i2[max(0, p-850):p+1200])
           PY
 
-      - name: Probe decoded startup.tjs source around the alert text
+      - name: Probe raw startup.tjs bytecode container
         shell: bash
         run: |
           set -euo pipefail
@@ -1020,117 +1020,178 @@ jobs:
           path = Path("cpp/core/base/ScriptMgnIntf.cpp")
           text = path.read_text(encoding="utf-8")
 
-          marker = "KiriPad 2A.27 startup source stats"
+          marker = "KiriPad 2A.28 startup raw"
           if marker in text:
-              raise SystemExit("2A.27 startup source probe already present unexpectedly")
+              raise SystemExit("2A.28 bytecode probe already present unexpectedly")
 
-          needle = "    stream->Read(buffer, 0);\n"
+          needle = '''            bool isbytecode = TVPScriptEngine->LoadByteCode(
+                stream.get(), result, context, shortname.c_str());
+          '''
           pos = text.find(needle)
           if pos < 0:
-              raise SystemExit("stream->Read(buffer, 0) insertion point not found")
+              raise SystemExit("LoadByteCode call insertion point not found")
 
-          block = r'''
-              if(shortname == ttstr(TJS_W("startup.tjs"))) {
-                  std::string kiriPad2A27Utf8 = buffer.AsStdString();
+          pre = r'''
+            if(shortname == ttstr(TJS_W("startup.tjs"))) {
+                const tjs_uint64 kiriPad2A28Size = stream->GetSize();
+                std::vector<tjs_uint8> kiriPad2A28Raw(
+                    static_cast<size_t>(kiriPad2A28Size));
 
-                  size_t kiriPad2A27Newlines = 0;
-                  for(char ch : kiriPad2A27Utf8) {
-                      if(ch == '\n')
-                          ++kiriPad2A27Newlines;
-                  }
+                stream->Seek(0, TJS_BS_SEEK_SET);
+                if(!kiriPad2A28Raw.empty()) {
+                    stream->Read(
+                        kiriPad2A28Raw.data(),
+                        static_cast<tjs_uint>(kiriPad2A28Raw.size()));
+                }
+                stream->Seek(0, TJS_BS_SEEK_SET);
 
-                  spdlog::info(
-                      "KiriPad 2A.27 startup source stats: chars={} utf8_bytes={} lines={}",
-                      static_cast<unsigned long long>(buffer.GetLen()),
-                      static_cast<unsigned long long>(kiriPad2A27Utf8.size()),
-                      static_cast<unsigned long long>(kiriPad2A27Newlines + 1));
+                auto kiriPad2A28Hex = [&](size_t begin, size_t count) {
+                    std::string out;
+                    char tmp[4];
+                    const size_t end =
+                        std::min(kiriPad2A28Raw.size(), begin + count);
+                    for(size_t i = begin; i < end; ++i) {
+                        std::snprintf(
+                            tmp, sizeof(tmp), "%02X",
+                            static_cast<unsigned int>(kiriPad2A28Raw[i]));
+                        if(!out.empty())
+                            out.push_back(' ');
+                        out += tmp;
+                    }
+                    return out;
+                };
 
-                  auto kiriPad2A27Escape = [](const std::string &src) {
-                      std::string out;
-                      out.reserve(src.size() + 32);
-                      for(unsigned char ch : src) {
-                          switch(ch) {
-                              case '\r': out += "\\r"; break;
-                              case '\n': out += "\\n"; break;
-                              case '\t': out += "\\t"; break;
-                              default:
-                                  if(ch < 0x20 || ch == 0x7f) {
-                                      char tmp[8];
-                                      std::snprintf(tmp, sizeof(tmp), "\\x%02X",
-                                                    static_cast<unsigned int>(ch));
-                                      out += tmp;
-                                  } else {
-                                      out.push_back(static_cast<char>(ch));
-                                  }
-                                  break;
-                          }
-                      }
-                      return out;
-                  };
+                spdlog::info(
+                    "KiriPad 2A.28 startup raw: size={} head16={}",
+                    static_cast<unsigned long long>(kiriPad2A28Raw.size()),
+                    kiriPad2A28Hex(0, 16));
 
-                  auto kiriPad2A27LogAround =
-                      [&](const char *label, const char *literal) {
-                          const std::string key(literal);
-                          const size_t hit = kiriPad2A27Utf8.find(key);
-                          if(hit == std::string::npos) {
-                              spdlog::info(
-                                  "KiriPad 2A.27 startup literal '{}' not found",
-                                  label);
-                              return;
-                          }
+                auto kiriPad2A28FindAscii =
+                    [&](const char *literal) -> size_t {
+                        const std::string key(literal);
+                        if(key.empty() || key.size() > kiriPad2A28Raw.size())
+                            return std::string::npos;
+                        for(size_t i = 0;
+                            i + key.size() <= kiriPad2A28Raw.size(); ++i) {
+                            bool ok = true;
+                            for(size_t j = 0; j < key.size(); ++j) {
+                                if(kiriPad2A28Raw[i + j] !=
+                                   static_cast<tjs_uint8>(
+                                       static_cast<unsigned char>(key[j]))) {
+                                    ok = false;
+                                    break;
+                                }
+                            }
+                            if(ok)
+                                return i;
+                        }
+                        return std::string::npos;
+                    };
 
-                          const size_t radius = 220;
-                          const size_t begin = hit > radius ? hit - radius : 0;
-                          const size_t end =
-                              std::min(kiriPad2A27Utf8.size(),
-                                       hit + key.size() + radius);
-                          const std::string snippet =
-                              kiriPad2A27Utf8.substr(begin, end - begin);
+                auto kiriPad2A28FindUtf16LE =
+                    [&](const char *literal) -> size_t {
+                        const std::string key(literal);
+                        const size_t bytes = key.size() * 2;
+                        if(key.empty() || bytes > kiriPad2A28Raw.size())
+                            return std::string::npos;
+                        for(size_t i = 0;
+                            i + bytes <= kiriPad2A28Raw.size(); ++i) {
+                            bool ok = true;
+                            for(size_t j = 0; j < key.size(); ++j) {
+                                if(kiriPad2A28Raw[i + j * 2] !=
+                                       static_cast<tjs_uint8>(
+                                           static_cast<unsigned char>(key[j])) ||
+                                   kiriPad2A28Raw[i + j * 2 + 1] != 0) {
+                                    ok = false;
+                                    break;
+                                }
+                            }
+                            if(ok)
+                                return i;
+                        }
+                        return std::string::npos;
+                    };
 
-                          spdlog::info(
-                              "KiriPad 2A.27 startup literal '{}' pos={} context='{}'",
-                              label,
-                              static_cast<unsigned long long>(hit),
-                              kiriPad2A27Escape(snippet));
-                      };
+                auto kiriPad2A28Utf16Context = [&](size_t hit) {
+                    if(hit == std::string::npos)
+                        return std::string("(not found)");
+                    size_t begin = hit > 160 ? hit - 160 : 0;
+                    begin &= ~static_cast<size_t>(1);
+                    const size_t end =
+                        std::min(kiriPad2A28Raw.size(), hit + 320);
+                    std::string out;
+                    for(size_t i = begin; i + 1 < end; i += 2) {
+                        const unsigned char lo = kiriPad2A28Raw[i];
+                        const unsigned char hi = kiriPad2A28Raw[i + 1];
+                        if(hi == 0 && lo >= 0x20 && lo <= 0x7e)
+                            out.push_back(static_cast<char>(lo));
+                        else if(lo == 0 && hi == 0)
+                            out.push_back('|');
+                        else
+                            out.push_back('.');
+                    }
+                    return out;
+                };
 
-                  kiriPad2A27LogAround("startup failed", "startup failed");
-                  kiriPad2A27LogAround(
-                      "corrupted execution file", "corrupted execution file");
+                const char *kiriPad2A28Needles[] = {
+                    "startup failed",
+                    "corrupted execution file",
+                    "execution file",
+                    "SabbatOfTheWitch",
+                    "BootStrap.exe",
+                    ".exe"
+                };
 
-                  const size_t previewLen =
-                      std::min<size_t>(320, kiriPad2A27Utf8.size());
-                  spdlog::info(
-                      "KiriPad 2A.27 startup head='{}'",
-                      kiriPad2A27Escape(
-                          kiriPad2A27Utf8.substr(0, previewLen)));
+                for(const char *literal : kiriPad2A28Needles) {
+                    const size_t asciiPos =
+                        kiriPad2A28FindAscii(literal);
+                    const size_t utf16Pos =
+                        kiriPad2A28FindUtf16LE(literal);
 
-                  if(kiriPad2A27Utf8.size() > previewLen) {
-                      const size_t tailBegin =
-                          kiriPad2A27Utf8.size() - previewLen;
-                      spdlog::info(
-                          "KiriPad 2A.27 startup tail='{}'",
-                          kiriPad2A27Escape(
-                              kiriPad2A27Utf8.substr(
-                                  tailBegin, previewLen)));
-                  }
-              }
+                    if(asciiPos != std::string::npos) {
+                        spdlog::info(
+                            "KiriPad 2A.28 startup literal ASCII '{}' pos={}",
+                            literal,
+                            static_cast<unsigned long long>(asciiPos));
+                    }
+                    if(utf16Pos != std::string::npos) {
+                        spdlog::info(
+                            "KiriPad 2A.28 startup literal UTF16 '{}' pos={} context='{}'",
+                            literal,
+                            static_cast<unsigned long long>(utf16Pos),
+                            kiriPad2A28Utf16Context(utf16Pos));
+                    }
+                    if(asciiPos == std::string::npos &&
+                       utf16Pos == std::string::npos) {
+                        spdlog::info(
+                            "KiriPad 2A.28 startup literal '{}' not found raw",
+                            literal);
+                    }
+                }
+            }
 
           '''
+          text = text[:pos] + pre + text[pos:]
 
-          text = text[:pos + len(needle)] + block + text[pos + len(needle):]
+          # Log whether the existing engine actually recognized startup.tjs
+          # as bytecode. This is deliberately inserted after the existing call.
+          after = needle + r'''
+            if(shortname == ttstr(TJS_W("startup.tjs"))) {
+                spdlog::info(
+                    "KiriPad 2A.28 startup LoadByteCode result={}",
+                    isbytecode ? "true" : "false");
+            }
+          '''
+          text = text.replace(needle, after, 1)
 
-          # Ensure the small helpers we use are available.
           first_include = text.find("#include")
           if first_include < 0:
               raise SystemExit("include insertion point not found")
           extra = ""
-          if "#include <algorithm>" not in text:
-              extra += "#include <algorithm>\n"
-          if "#include <cstdio>" not in text:
-              extra += "#include <cstdio>\n"
-          if "#include <string>" not in text:
-              extra += "#include <string>\n"
+          for hdr in ("algorithm", "cstdio", "string", "vector"):
+              inc = f"#include <{hdr}>\n"
+              if inc not in text:
+                  extra += inc
           if extra:
               text = text[:first_include] + extra + text[first_include:]
 
@@ -1138,19 +1199,18 @@ jobs:
 
           patched = path.read_text(encoding="utf-8")
           required = (
-              "KiriPad 2A.27 startup source stats",
-              "KiriPad 2A.27 startup literal",
-              "KiriPad 2A.27 startup head=",
-              'shortname == ttstr(TJS_W("startup.tjs"))',
+              "KiriPad 2A.28 startup raw:",
+              "KiriPad 2A.28 startup literal UTF16",
+              "KiriPad 2A.28 startup LoadByteCode result=",
           )
           for token in required:
               if token not in patched:
-                  raise SystemExit(f"2A.27 verification failed: {token}")
+                  raise SystemExit(f"2A.28 verification failed: {token}")
 
-          p = patched.index("KiriPad 2A.27 startup source stats")
-          print("Installed Phase 2A.27 startup source probe.")
+          p = patched.index("KiriPad 2A.28 startup raw:")
+          print("Installed Phase 2A.28 startup bytecode probe.")
           print("===== patched source window =====")
-          print(patched[max(0, p-1600):p+4200])
+          print(patched[max(0, p-2200):p+6200])
           PY
 
       - name: Configure and build upstream iOS engine only
@@ -1778,7 +1838,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A27-runtime-build-logs
+          name: KiriPad-Phase2A28-runtime-build-logs
           path: artifacts/runtime-build-logs
           if-no-files-found: warn
           retention-days: 14
@@ -1787,7 +1847,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A27-runtime-unsigned-ipa
+          name: KiriPad-Phase2A28-runtime-unsigned-ipa
           path: artifacts/KiriPad-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
@@ -1796,7 +1856,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A27-runtime-source-info
+          name: KiriPad-Phase2A28-runtime-source-info
           path: artifacts/runtime-source-info
           if-no-files-found: warn
           retention-days: 14
