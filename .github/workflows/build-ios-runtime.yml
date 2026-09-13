@@ -1,4 +1,4 @@
-name: Build KiriPad Phase 2A.19.3 Storage Entry Trace
+name: Build KiriPad Phase 2A.20 Direct Script Trace
 
 on:
   workflow_dispatch:
@@ -708,6 +708,136 @@ jobs:
           print("Installed Phase 2A.19.3 storage-entry trace.")
           PY
 
+      - name: Instrument direct script and exception trace
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd .engine-src/KrKr2-Next
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path("cpp/core/base/ScriptMgnIntf.cpp")
+          text = path.read_text(encoding="utf-8")
+
+          def inject_after_opening_brace(sig_re, code, label, count=1):
+              global text
+              matches = list(re.finditer(sig_re, text, re.S))
+              if len(matches) < count:
+                  raise SystemExit(f"{label}: signature not found")
+              # Inject into the first matching overload only unless count > 1.
+              done = 0
+              offset = 0
+              for m in matches:
+                  if done >= count:
+                      break
+                  start = m.end() + offset
+                  brace = text.find("{", start)
+                  if brace < 0:
+                      raise SystemExit(f"{label}: opening brace not found")
+                  text = text[:brace+1] + code + text[brace+1:]
+                  offset += len(code)
+                  done += 1
+
+          # Named TVPExecuteScript overload(s). We only add entry logs.
+          script_pat = (
+              r'void\s+TVPExecuteScript\s*\(\s*const\s+ttstr\s*&\s*content\s*,'
+              r'(?=[^)]*const\s+ttstr\s*&\s*name\b)[^)]*\)'
+          )
+          script_matches = list(re.finditer(script_pat, text, re.S))
+          if not script_matches:
+              raise SystemExit("named TVPExecuteScript overload not found")
+          # Inject into every named overload, processing from end to start.
+          for m in reversed(script_matches):
+              brace = text.find("{", m.end())
+              if brace < 0:
+                  raise SystemExit("named TVPExecuteScript opening brace not found")
+              code = r'''
+              TVPAddImportantLog(
+                  TJS_W("(info) KiriPad 2A.20 TVPExecuteScript named: ") + name);
+          '''
+              text = text[:brace+1] + code + text[brace+1:]
+
+          # Named TVPExecuteExpression overload(s).
+          expr_pat = (
+              r'void\s+TVPExecuteExpression\s*\(\s*const\s+ttstr\s*&\s*content\s*,'
+              r'(?=[^)]*const\s+ttstr\s*&\s*name\b)[^)]*\)'
+          )
+          expr_matches = list(re.finditer(expr_pat, text, re.S))
+          for m in reversed(expr_matches):
+              brace = text.find("{", m.end())
+              if brace < 0:
+                  raise SystemExit("named TVPExecuteExpression opening brace not found")
+              code = r'''
+              TVPAddImportantLog(
+                  TJS_W("(info) KiriPad 2A.20 TVPExecuteExpression named: ") + name);
+          '''
+              text = text[:brace+1] + code + text[brace+1:]
+
+          # Direct bytecode execution entry.
+          bc = re.search(
+              r'void\s+TVPExecuteBytecode\s*\([^)]*const\s+tjs_char\s*\*\s*name[^)]*\)',
+              text,
+              re.S,
+          )
+          if not bc:
+              raise SystemExit("TVPExecuteBytecode signature not found")
+          brace = text.find("{", bc.end())
+          if brace < 0:
+              raise SystemExit("TVPExecuteBytecode opening brace not found")
+          code = r'''
+              TVPAddImportantLog(
+                  TJS_W("(info) KiriPad 2A.20 TVPExecuteBytecode: ") +
+                  ttstr(name ? name : TJS_W("(null)")));
+          '''
+          text = text[:brace+1] + code + text[brace+1:]
+
+          # Unhandled TJS script error: log the actual message.
+          ue = re.search(
+              r'bool\s+TVPProcessUnhandledException\s*\(\s*eTJSScriptError\s*&\s*e\s*\)',
+              text,
+              re.S,
+          )
+          if ue:
+              brace = text.find("{", ue.end())
+              if brace >= 0:
+                  code = r'''
+              TVPAddImportantLog(
+                  TJS_W("(info) KiriPad 2A.20 unhandled script error: ") +
+                  e.GetMessage());
+          '''
+                  text = text[:brace+1] + code + text[brace+1:]
+
+          # Generic eTJS exception, also has GetMessage() in this codebase.
+          ge = re.search(
+              r'bool\s+TVPProcessUnhandledException\s*\(\s*eTJS\s*&\s*e\s*\)',
+              text,
+              re.S,
+          )
+          if ge:
+              brace = text.find("{", ge.end())
+              if brace >= 0:
+                  code = r'''
+              TVPAddImportantLog(
+                  TJS_W("(info) KiriPad 2A.20 unhandled TJS error: ") +
+                  e.GetMessage());
+          '''
+                  text = text[:brace+1] + code + text[brace+1:]
+
+          path.write_text(text, encoding="utf-8")
+
+          patched = path.read_text(encoding="utf-8")
+          required = (
+              "KiriPad 2A.20 TVPExecuteScript named:",
+              "KiriPad 2A.20 TVPExecuteBytecode:",
+          )
+          for token in required:
+              if token not in patched:
+                  raise SystemExit(f"2A.20 trace verification failed: {token}")
+
+          print("Installed Phase 2A.20 direct script/bytecode trace.")
+          PY
+
       - name: Configure and build upstream iOS engine only
         shell: bash
         run: |
@@ -1333,7 +1463,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A19_3-runtime-build-logs
+          name: KiriPad-Phase2A20-runtime-build-logs
           path: artifacts/runtime-build-logs
           if-no-files-found: warn
           retention-days: 14
@@ -1342,7 +1472,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A19_3-runtime-unsigned-ipa
+          name: KiriPad-Phase2A20-runtime-unsigned-ipa
           path: artifacts/KiriPad-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
@@ -1351,7 +1481,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A19_3-runtime-source-info
+          name: KiriPad-Phase2A20-runtime-source-info
           path: artifacts/runtime-source-info
           if-no-files-found: warn
           retention-days: 14
