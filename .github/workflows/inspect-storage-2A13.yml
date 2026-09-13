@@ -1,0 +1,135 @@
+name: Inspect KrKr2 Phase 2A.12 Storage Paths
+
+on:
+  workflow_dispatch:
+    inputs:
+      engine_ref:
+        description: "KrKr2-Next git ref"
+        required: true
+        default: "1abd1ed4e8aec7abd5d2524c3a9ad7886880602f"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch KrKr2-Next
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none https://github.com/reAAAq/KrKr2-Next.git engine
+          cd engine
+          git checkout "${{ inputs.engine_ref }}"
+          git rev-parse HEAD | tee ../engine-commit.txt
+
+      - name: Reproduce Phase 2A.12 storage patches only
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd engine
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("cpp/core/base/impl/StorageImpl.cpp")
+          text = path.read_text(encoding="utf-8")
+
+          # Phase 2A.7/2A.12 exact-prefix comparison patch.
+          old = "if(!_utf8_strcasecmp(actualPrefix.c_str(), dir.c_str())) {"
+          new = "if(!_utf8_strcasecmp_nfc(actualPrefix.c_str(), dir.c_str())) { // KiriPad Phase 2A.12 exact-prefix recovery"
+          if text.count(old) != 1:
+              raise SystemExit(f"exact-prefix patch anchor count={text.count(old)}")
+          text = text.replace(old, new, 1)
+
+          # Phase 2A.12 sibling-prefix patch exactly as used in the runtime workflow.
+          old_block = '''            if(prefix.length() < dir.length())
+                          continue;
+                      std::string actualPrefix = prefix.substr(0, dir.length());
+                      if(!_utf8_strcasecmp_nfc(actualPrefix.c_str(), dir.c_str())) { // KiriPad Phase 2A.12 exact-prefix recovery
+                          newname = prefixPath[i];
+                          ptr += prefixPath[i].length();
+                          while(*ptr && *ptr == TJS_W('/'))
+                              ++ptr;
+                          spdlog::debug("  iOS prefix matched! newname='{}', remaining ptr='{}'", newname.AsNarrowStdString(), tTJSNarrowStringHolder(ptr).Buf);
+                          break;
+                      }
+          '''
+          new_block = '''            if(prefix.length() >= dir.length()) {
+                          std::string actualPrefix = prefix.substr(0, dir.length());
+                          if(!_utf8_strcasecmp_nfc(actualPrefix.c_str(), dir.c_str())) { // KiriPad Phase 2A.12 exact-prefix recovery
+                              newname = prefixPath[i];
+                              ptr += prefixPath[i].length();
+                              while(*ptr && *ptr == TJS_W('/'))
+                                  ++ptr;
+                              spdlog::debug("  iOS prefix matched! newname='{}', remaining ptr='{}'", newname.AsNarrowStdString(), tTJSNarrowStringHolder(ptr).Buf);
+                              break;
+                          }
+                      }
+
+                      // KiriPad Phase 2A.12 sibling-prefix diagnostic copy.
+                      {
+                          const tjs_char *projectPrefixChars = prefixPath[i].c_str();
+                          tjs_int parentPrefixLen = prefixPath[i].length();
+                          while(parentPrefixLen > 0 && projectPrefixChars[parentPrefixLen - 1] != TJS_W('/'))
+                              --parentPrefixLen;
+                          if(parentPrefixLen > 0) {
+                              ttstr realParentPrefix(projectPrefixChars, parentPrefixLen);
+                              std::string realParentNarrow = tTJSNarrowStringHolder(realParentPrefix.c_str()).Buf;
+                              if(prefix.length() >= realParentNarrow.length()) {
+                                  std::string actualParent = prefix.substr(0, realParentNarrow.length());
+                                  int kiripadCmp = _utf8_strcasecmp_nfc(actualParent.c_str(), realParentNarrow.c_str());
+                                  spdlog::info("KiriPad 2A.12 sibling candidate: actual='{}' real='{}' cmp={}", actualParent, realParentNarrow, kiripadCmp);
+                                  if(!kiripadCmp) {
+                                      newname = realParentPrefix;
+                                      ptr += parentPrefixLen;
+                                      while(*ptr && *ptr == TJS_W('/'))
+                                          ++ptr;
+                                      spdlog::info("iOS sibling-prefix recovery matched: parent='{}', remaining='{}'", newname.AsNarrowStdString(), tTJSNarrowStringHolder(ptr).Buf);
+                                      break;
+                                  }
+                              }
+                          }
+                      }
+          '''
+          if text.count(old_block) != 1:
+              pos = text.find("iOS prefix matched!")
+              print(text[max(0, pos-1500):pos+1500] if pos >= 0 else "prefix marker not found")
+              raise SystemExit(f"sibling block anchor count={text.count(old_block)}")
+          text = text.replace(old_block, new_block, 1)
+
+          path.write_text(text, encoding="utf-8")
+          PY
+
+      - name: Export exact source windows
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="$GITHUB_WORKSPACE/storage-inspect.txt"
+          SRC="$GITHUB_WORKSPACE/engine/cpp/core/base/impl/StorageImpl.cpp"
+          {
+            echo "===== commit ====="
+            cat "$GITHUB_WORKSPACE/engine-commit.txt"
+            echo
+            echo "===== helpers + prefix tables: lines 280-355 ====="
+            nl -ba "$SRC" | sed -n '280,355p'
+            echo
+            echo "===== GetLocallyAccessibleName: lines 352-515 ====="
+            nl -ba "$SRC" | sed -n '352,515p'
+            echo
+            echo "===== AutoMountXP3: lines 1475-1585 ====="
+            nl -ba "$SRC" | sed -n '1475,1585p'
+            echo
+            echo "===== Phase markers ====="
+            grep -nE 'KiriPad 2A\.12|sibling-prefix|AutoMountXP3|_getPrefixPath|_getHomeDir' "$SRC" || true
+          } | tee "$OUT"
+
+      - name: Upload inspection artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: KiriPad-Phase2A12-storage-inspect
+          path: |
+            storage-inspect.txt
+            engine-commit.txt
+          if-no-files-found: error
