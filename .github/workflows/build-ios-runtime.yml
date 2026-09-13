@@ -1,4 +1,4 @@
-name: Build KiriPad Phase 2A.12 Sibling XP3 Path Fix
+name: Build KiriPad Phase 2A.13 Documents Path Recovery
 
 on:
   workflow_dispatch:
@@ -201,7 +201,7 @@ jobs:
           text = path.read_text(encoding="utf-8")
 
           old = "if(!_utf8_strcasecmp(actualPrefix.c_str(), dir.c_str())) {"
-          new = "if(!_utf8_strcasecmp_nfc(actualPrefix.c_str(), dir.c_str())) { // KiriPad Phase 2A.12: retain iOS sandbox prefix case/Unicode recovery"
+          new = "if(!_utf8_strcasecmp_nfc(actualPrefix.c_str(), dir.c_str())) { // KiriPad Phase 2A.13: retain iOS sandbox prefix case/Unicode recovery"
 
           count = text.count(old)
           if count != 1:
@@ -222,7 +222,7 @@ jobs:
                   print(f"{path}:{no}: {line}")
           PY
 
-      - name: Patch iOS sibling XP3 case-preserving path recovery
+      - name: Patch iOS Documents-anchor path recovery
         shell: bash
         run: |
           set -euo pipefail
@@ -233,81 +233,122 @@ jobs:
           path = Path("cpp/core/base/impl/StorageImpl.cpp")
           text = path.read_text(encoding="utf-8")
 
-          # When the engine entry is data.xp3, _getHomeDir()/prefixPath point to
-          # .../<game>/data.xp3. Sibling archives such as bgm.xp3 and voice.xp3
-          # live beside it, so the existing exact-project-prefix recovery cannot
-          # repair the lower-cased iOS storage path for those siblings. Extend
-          # the iOS recovery loop with a fallback for the real parent directory.
-          old = '''            if(prefix.length() < dir.length())
-                          continue;
-                      std::string actualPrefix = prefix.substr(0, dir.length());
-                      if(!_utf8_strcasecmp_nfc(actualPrefix.c_str(), dir.c_str())) { // KiriPad Phase 2A.12: retain iOS sandbox prefix case/Unicode recovery
-                          newname = prefixPath[i];
-                          ptr += prefixPath[i].length();
+          # The engine entry is .../<game>/data.xp3, but the storage namespace
+          # normalizes absolute paths to lower case. On iOS the real sandbox
+          # prefix contains case-sensitive components such as Containers/Data/
+          # Application/<UUID>/Documents. Recover the real Documents directory
+          # from TVPGetApplicationHomeDirectory() and let the existing component
+          # walker resolve <game>/<archive> on disk.
+          anchor = '''        static const std::vector<ttstr> &prefixPath = _getPrefixPath();
+                  static const std::vector<std::string> &homeDir = _getHomeDir();
+                  spdlog::debug("iOS GetLocallyAccessibleName: prefix='{}', homeDir count={}", prefix, homeDir.size());
+          '''
+          replacement = '''        static const std::vector<ttstr> &prefixPath = _getPrefixPath();
+                  static const std::vector<std::string> &homeDir = _getHomeDir();
+
+                  bool kiripadDocumentsRecovered = false;
+                  const std::string kiripadNormalizedDocs = "/documents/";
+                  std::string kiripadPrefixLower = prefix;
+                  for(auto &c : kiripadPrefixLower)
+                      if('A' <= c && c <= 'Z') c = (char)(c + ('a' - 'A'));
+                  const size_t kiripadDocsPos = kiripadPrefixLower.find(kiripadNormalizedDocs);
+                  if(kiripadDocsPos != std::string::npos) {
+                      for(int i = 0; i < (int)prefixPath.size(); ++i) {
+                          const std::string realProjectPath = prefixPath[i].AsNarrowStdString();
+                          const std::string realDocsToken = "/Documents/";
+                          const size_t realDocsPos = realProjectPath.find(realDocsToken);
+                          if(realDocsPos == std::string::npos)
+                              continue;
+
+                          const std::string realDocuments =
+                              realProjectPath.substr(0, realDocsPos + realDocsToken.size() - 1);
+                          newname = ttstr(realDocuments.c_str());
+
+                          // 'prefix' has one synthetic leading '/', while ptr points
+                          // at the same storage path without that synthetic slash.
+                          size_t ptrAdvance = kiripadDocsPos + kiripadNormalizedDocs.size();
+                          if(ptrAdvance > 0) --ptrAdvance;
+                          ptr += ptrAdvance;
                           while(*ptr && *ptr == TJS_W('/'))
                               ++ptr;
-                          spdlog::debug("  iOS prefix matched! newname='{}', remaining ptr='{}'", newname.AsNarrowStdString(), tTJSNarrowStringHolder(ptr).Buf);
+
+                          spdlog::info("KiriPad 2A.13 Documents-anchor recovery: base='{}', remaining='{}'",
+                                       realDocuments, tTJSNarrowStringHolder(ptr).Buf);
+                          kiripadDocumentsRecovered = true;
                           break;
                       }
-          '''
-          new = '''            if(prefix.length() >= dir.length()) {
-                          std::string actualPrefix = prefix.substr(0, dir.length());
-                          if(!_utf8_strcasecmp_nfc(actualPrefix.c_str(), dir.c_str())) { // KiriPad Phase 2A.12: retain iOS sandbox prefix case/Unicode recovery
-                              newname = prefixPath[i];
-                              ptr += prefixPath[i].length();
-                              while(*ptr && *ptr == TJS_W('/'))
-                                  ++ptr;
-                              spdlog::debug("  iOS prefix matched! newname='{}', remaining ptr='{}'", newname.AsNarrowStdString(), tTJSNarrowStringHolder(ptr).Buf);
-                              break;
-                          }
-                      }
+                  }
 
-                      // KiriPad Phase 2A.12: if the project entry itself is an XP3,
-                      // also recover files that are siblings of that XP3. Example:
-                      //   project: .../Game/data.xp3
-                      //   request: .../Game/bgm.xp3
-                      // iOS paths are case-sensitive, while the storage namespace above
-                      // has already been normalized to lowercase.
-                      {
-                          const tjs_char *projectPrefixChars = prefixPath[i].c_str();
-                          tjs_int parentPrefixLen = prefixPath[i].length();
-                          while(parentPrefixLen > 0 && projectPrefixChars[parentPrefixLen - 1] != TJS_W('/'))
-                              --parentPrefixLen;
-                          if(parentPrefixLen > 0) {
-                              ttstr realParentPrefix(projectPrefixChars, parentPrefixLen);
-                              std::string realParentNarrow = tTJSNarrowStringHolder(realParentPrefix.c_str()).Buf;
-                              if(prefix.length() >= realParentNarrow.length()) {
-                                  std::string actualParent = prefix.substr(0, realParentNarrow.length());
-                                  if(!_utf8_strcasecmp_nfc(actualParent.c_str(), realParentNarrow.c_str())) {
-                                      newname = realParentPrefix;
-                                      ptr += parentPrefixLen;
-                                      while(*ptr && *ptr == TJS_W('/'))
-                                          ++ptr;
-                                      spdlog::info("iOS sibling-prefix recovery matched: parent='{}', remaining='{}'",
-                                                   newname.AsNarrowStdString(), tTJSNarrowStringHolder(ptr).Buf);
-                                      break;
-                                  }
-                              }
-                          }
-                      }
+                  spdlog::debug("iOS GetLocallyAccessibleName: prefix='{}', homeDir count={}", prefix, homeDir.size());
+                  if(!kiripadDocumentsRecovered) {
           '''
+          if text.count(anchor) != 1:
+              print(f"Expected one iOS prefix-table anchor, found {text.count(anchor)}")
+              pos = text.find('iOS GetLocallyAccessibleName: prefix=')
+              if pos >= 0:
+                  print(text[max(0, pos-1200):pos+1800])
+              raise SystemExit(1)
+          text = text.replace(anchor, replacement, 1)
 
-          count = text.count(old)
-          if count != 1:
-              print(f"Expected exactly one iOS prefix-recovery block, found {count}.")
+          # Close the fallback wrapper immediately after the existing prefix loop.
+          loop_tail = '''            }
+                  }
+              }
+          #endif
+          '''
+          loop_tail_replacement = '''            }
+                  }
+                  }
+              }
+          #endif
+          '''
+          if text.count(loop_tail) != 1:
+              print(f"Expected one iOS prefix-loop tail, found {text.count(loop_tail)}")
               pos = text.find('iOS prefix matched!')
               if pos >= 0:
-                  print("===== nearby source =====")
-                  print(text[max(0, pos-1800):pos+1800])
+                  print(text[max(0, pos-1600):pos+2200])
               raise SystemExit(1)
+          text = text.replace(loop_tail, loop_tail_replacement, 1)
 
+          path.write_text(text, encoding="utf-8")
+          print("Inserted deterministic iOS Documents-anchor recovery:")
+          for no, line in enumerate(text.splitlines(), 1):
+              if "Documents-anchor recovery" in line or "kiripadDocumentsRecovered" in line:
+                  print(f"{path}:{no}: {line}")
+          PY
+
+      - name: Fix AutoMountXP3 current archive exclusion
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd .engine-src/KrKr2-Next
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("cpp/core/base/impl/StorageImpl.cpp")
+          text = path.read_text(encoding="utf-8")
+          old = '''    std::string projBaseStr = projBaseName.AsNarrowStdString();
+              for(auto &c : projBaseStr) c = (char)tolower((unsigned char)c);
+
+              std::vector<std::string> xp3Names;
+          '''
+          new = '''    std::string projBaseStr = projBaseName.AsNarrowStdString();
+              for(auto &c : projBaseStr) c = (char)tolower((unsigned char)c);
+              if(projBaseStr.size() >= 4 && projBaseStr.substr(projBaseStr.size() - 4) == ".xp3")
+                  projBaseStr.resize(projBaseStr.size() - 4); // KiriPad Phase 2A.13: compare basename to basename
+              spdlog::info("KiriPad 2A.13 AutoMount project basename={}", projBaseStr);
+
+              std::vector<std::string> xp3Names;
+          '''
+          if text.count(old) != 1:
+              print(f"Expected one AutoMount project-basename block, found {text.count(old)}")
+              pos = text.find('std::string projBaseStr')
+              if pos >= 0:
+                  print(text[max(0, pos-800):pos+1400])
+              raise SystemExit(1)
           text = text.replace(old, new, 1)
           path.write_text(text, encoding="utf-8")
-
-          print("Inserted iOS sibling-XP3 parent-prefix recovery:")
-          for no, line in enumerate(text.splitlines(), 1):
-              if "sibling-prefix recovery" in line or "realParentPrefix" in line:
-                  print(f"{path}:{no}: {line}")
+          print("Fixed AutoMountXP3 exclusion of the project archive itself.")
           PY
 
       - name: Patch iOS AutoMountXP3 parent directory recovery
@@ -329,7 +370,7 @@ jobs:
               raise SystemExit(1)
           
           patch = """#if defined(__APPLE__) && TARGET_OS_IPHONE
-              // KiriPad Phase 2A.12: TVPProjectDir is normalized to lowercase for the
+              // KiriPad Phase 2A.13: TVPProjectDir is normalized to lowercase for the
               // storage namespace, but the iOS sandbox path is case-sensitive.
               // AutoMountXP3 asks for the parent of the game root (Documents/), which is
               // shorter than _getHomeDir()[0] (Documents/<game>/), so the ordinary
@@ -498,7 +539,18 @@ jobs:
           cp "$ENGINE/bridge/flutter_engine_bridge/ios/Libs/libengine_vendors.a" Vendor/KrKr2Next/Libs/
           ls -lh Vendor/KrKr2Next/Libs/*.a
 
-      - name: Force-install Phase 2A.12 sibling-XP3 runtime host
+          # Verify that the patched StorageImpl object is actually present in the
+          # static archive that KiriPad will link.
+          ENGINE_STRINGS="$RUNNER_TEMP/kiripad-engine-project-strings.txt"
+          strings Vendor/KrKr2Next/Libs/libengine_project.a > "$ENGINE_STRINGS"
+          if ! grep -Fq "KiriPad 2A.13 Documents-anchor recovery" "$ENGINE_STRINGS"; then
+            echo "ERROR: merged engine archive does not contain the Phase 2A.13 Documents-anchor marker"
+            grep -F "KiriPad 2A.13" "$ENGINE_STRINGS" | head -n 80 || true
+            exit 1
+          fi
+          echo "Phase 2A.13 engine archive marker confirmed."
+
+      - name: Force-install Phase 2A.13 Documents-path runtime host
         shell: bash
         run: |
           set -euo pipefail
@@ -649,7 +701,7 @@ jobs:
           }
           
           - (void)stopOnOwnerThread {
-              NSAssert(NSThread.isMainThread, @"KrKr2 engine owner thread must be the main thread in Phase 2A.12");
+              NSAssert(NSThread.isMainThread, @"KrKr2 engine owner thread must be the main thread in Phase 2A.13");
               if (_displayLink) {
                   [_displayLink invalidate];
                   _displayLink = nil;
@@ -675,13 +727,13 @@ jobs:
               uint32_t startupState = ENGINE_STARTUP_STATE_IDLE;
               const auto stateResult = engine_get_startup_state(_engine, &startupState);
               if (stateResult != ENGINE_RESULT_OK) {
-                  [self notifyLog:[NSString stringWithFormat:@"\n[Phase2A.12] engine_get_startup_state error=%d: %@\n", (int)stateResult, [self lastEngineError]]];
+                  [self notifyLog:[NSString stringWithFormat:@"\n[Phase2A.13] engine_get_startup_state error=%d: %@\n", (int)stateResult, [self lastEngineError]]];
                   [self stopOnOwnerThread];
                   return;
               }
           
               if (startupState == ENGINE_STARTUP_STATE_FAILED) {
-                  [self notifyLog:[NSString stringWithFormat:@"\n[Phase2A.12] startup FAILED (state=%u, tick=%d): %@\n", startupState, (int)tickResult, [self lastEngineError]]];
+                  [self notifyLog:[NSString stringWithFormat:@"\n[Phase2A.13] startup FAILED (state=%u, tick=%d): %@\n", startupState, (int)tickResult, [self lastEngineError]]];
                   [self captureFrameIfAvailable];
                   [self stopOnOwnerThread];
                   return;
@@ -689,11 +741,11 @@ jobs:
           
               if (startupState == ENGINE_STARTUP_STATE_SUCCEEDED && !_startupSuccessLogged) {
                   _startupSuccessLogged = YES;
-                  [self notifyLog:@"\n[Phase2A.12] startup SUCCEEDED — entering frame loop\n"];
+                  [self notifyLog:@"\n[Phase2A.13] startup SUCCEEDED — entering frame loop\n"];
               }
           
               if (tickResult != ENGINE_RESULT_OK && tickResult != ENGINE_RESULT_INVALID_STATE) {
-                  [self notifyLog:[NSString stringWithFormat:@"\n[Phase2A.12] engine_tick error=%d: %@\n", (int)tickResult, [self lastEngineError]]];
+                  [self notifyLog:[NSString stringWithFormat:@"\n[Phase2A.13] engine_tick error=%d: %@\n", (int)tickResult, [self lastEngineError]]];
               }
               [self captureFrameIfAvailable];
           }
@@ -709,10 +761,10 @@ jobs:
           #else
               // KrKr2-Next engine_api binds an engine handle to the exact OS thread that
               // called engine_create().  A serial GCD queue is NOT enough: GCD may run
-              // successive blocks on different worker threads.  Phase 2A.12 therefore
+              // successive blocks on different worker threads.  Phase 2A.13 therefore
               // owns the engine on UIKit's main thread and drives it with CADisplayLink.
               if (!NSThread.isMainThread) {
-                  if (error) *error = [NSError errorWithDomain:KiriPadRuntimeErrorDomain code:4 userInfo:@{NSLocalizedDescriptionKey:@"KiriPad Phase 2A.12 はメインスレッドから起動する必要があります。"}];
+                  if (error) *error = [NSError errorWithDomain:KiriPadRuntimeErrorDomain code:4 userInfo:@{NSLocalizedDescriptionKey:@"KiriPad Phase 2A.13 はメインスレッドから起動する必要があります。"}];
                   return NO;
               }
               if (!gameRoot.isFileURL) {
@@ -748,7 +800,7 @@ jobs:
                       }
                   }
                   if (!engineEntryPath && listError) {
-                      [self notifyLog:[NSString stringWithFormat:@"[Phase2A.12] data.xp3 directory scan warning: %@\n", listError.localizedDescription]];
+                      [self notifyLog:[NSString stringWithFormat:@"[Phase2A.13] data.xp3 directory scan warning: %@\n", listError.localizedDescription]];
                   }
               }
               if (!engineEntryPath && !rootIsDirectory && [[rootPath.pathExtension lowercaseString] isEqualToString:@"xp3"]) {
@@ -768,13 +820,13 @@ jobs:
               [fm createDirectoryAtPath:cachePath withIntermediateDirectories:YES attributes:nil error:nil];
           
               [self notifyRunning:YES];
-              [self notifyLog:[NSString stringWithFormat:@"\n[Phase2A.12] backend: %@\n[Phase2A.12] owner thread: main=%@\n[Phase2A.12] selected root: %@\n[Phase2A.12] engine entry: %@\n", [EngineRuntimeHost backendDescription], NSThread.isMainThread ? @"YES" : @"NO", rootPath, engineEntryPath]];
+              [self notifyLog:[NSString stringWithFormat:@"\n[Phase2A.13] backend: %@\n[Phase2A.13] owner thread: main=%@\n[Phase2A.13] selected root: %@\n[Phase2A.13] engine entry: %@\n", [EngineRuntimeHost backendDescription], NSThread.isMainThread ? @"YES" : @"NO", rootPath, engineEntryPath]];
           
               uint32_t runtimeVersion = 0;
               auto versionResult = engine_get_runtime_api_version(&runtimeVersion);
               if (versionResult != ENGINE_RESULT_OK || (runtimeVersion >> 24u) != (ENGINE_API_VERSION >> 24u)) {
                   if (error) *error = [NSError errorWithDomain:KiriPadRuntimeErrorDomain code:5 userInfo:@{NSLocalizedDescriptionKey:@"engine ABI mismatch"}];
-                  [self notifyLog:[NSString stringWithFormat:@"[Phase2A.12] engine ABI mismatch: runtime=0x%08x expected=0x%08x\n", runtimeVersion, ENGINE_API_VERSION]];
+                  [self notifyLog:[NSString stringWithFormat:@"[Phase2A.13] engine ABI mismatch: runtime=0x%08x expected=0x%08x\n", runtimeVersion, ENGINE_API_VERSION]];
                   [self stopOnOwnerThread];
                   return NO;
               }
@@ -787,21 +839,21 @@ jobs:
               auto createResult = engine_create(&desc, &_engine);
               if (createResult != ENGINE_RESULT_OK || !_engine) {
                   if (error) *error = [NSError errorWithDomain:KiriPadRuntimeErrorDomain code:6 userInfo:@{NSLocalizedDescriptionKey:@"engine_create failed"}];
-                  [self notifyLog:[NSString stringWithFormat:@"[Phase2A.12] engine_create failed: %d\n", (int)createResult]];
+                  [self notifyLog:[NSString stringWithFormat:@"[Phase2A.13] engine_create failed: %d\n", (int)createResult]];
                   [self stopOnOwnerThread];
                   return NO;
               }
           
               auto surfaceResult = engine_set_surface_size(_engine, 1280, 720);
               if (surfaceResult != ENGINE_RESULT_OK) {
-                  [self notifyLog:[NSString stringWithFormat:@"[Phase2A.12] engine_set_surface_size warning: %d / %@\n", (int)surfaceResult, [self lastEngineError]]];
+                  [self notifyLog:[NSString stringWithFormat:@"[Phase2A.13] engine_set_surface_size warning: %d / %@\n", (int)surfaceResult, [self lastEngineError]]];
               }
           
               auto openResult = engine_open_game_async(_engine, engineEntryPath.UTF8String, nullptr);
               if (openResult != ENGINE_RESULT_OK) {
                   NSString *detail = [self lastEngineError];
                   if (error) *error = [NSError errorWithDomain:KiriPadRuntimeErrorDomain code:7 userInfo:@{NSLocalizedDescriptionKey:detail ?: @"engine_open_game_async failed"}];
-                  [self notifyLog:[NSString stringWithFormat:@"[Phase2A.12] engine_open_game_async failed: %d / %@\n", (int)openResult, detail]];
+                  [self notifyLog:[NSString stringWithFormat:@"[Phase2A.13] engine_open_game_async failed: %d / %@\n", (int)openResult, detail]];
                   [self stopOnOwnerThread];
                   return NO;
               }
@@ -852,7 +904,7 @@ jobs:
               event.button = 0;
               const auto inputResult = engine_send_input(_engine, &event);
               if (inputResult != ENGINE_RESULT_OK && inputResult != ENGINE_RESULT_INVALID_STATE) {
-                  [self notifyLog:[NSString stringWithFormat:@"\n[Phase2A.12] engine_send_input error=%d: %@\n", (int)inputResult, [self lastEngineError]]];
+                  [self notifyLog:[NSString stringWithFormat:@"\n[Phase2A.13] engine_send_input error=%d: %@\n", (int)inputResult, [self lastEngineError]]];
               }
           #else
               (void)type; (void)x; (void)y; (void)pointerID;
@@ -870,8 +922,8 @@ jobs:
           @end
           OBJC
           echo "===== KiriPad runtime host verification ====="
-          grep -nF "[Phase2A.12] owner thread: main=" App/EngineRuntimeHost.mm
-          grep -nF "[Phase2A.12] engine entry:" App/EngineRuntimeHost.mm
+          grep -nF "[Phase2A.13] owner thread: main=" App/EngineRuntimeHost.mm
+          grep -nF "[Phase2A.13] engine entry:" App/EngineRuntimeHost.mm
           grep -nF "engine_open_game_async(_engine, engineEntryPath.UTF8String" App/EngineRuntimeHost.mm
           if grep -qF "dispatch_queue_create(\"dev.kiripad.engine\"" App/EngineRuntimeHost.mm; then
             echo "ERROR: legacy serial-GCD engine owner code is still present"
@@ -901,13 +953,18 @@ jobs:
           # a successful marker match look like a failed pipeline.
           STRINGS_DUMP="$RUNNER_TEMP/kiripad-runtime-strings.txt"
           strings "$APP_BIN" > "$STRINGS_DUMP"
-          if ! grep -Fq "[Phase2A.12] owner thread: main=" "$STRINGS_DUMP" || ! grep -Fq "[Phase2A.12] engine entry:" "$STRINGS_DUMP"; then
-            echo "ERROR: built IPA does not contain the Phase 2A.12 sibling-XP3 runtime-host markers"
+          if ! grep -Fq "[Phase2A.13] owner thread: main=" "$STRINGS_DUMP" || ! grep -Fq "[Phase2A.13] engine entry:" "$STRINGS_DUMP"; then
+            echo "ERROR: built IPA does not contain the Phase 2A.13 runtime-host markers"
             echo "Nearby Phase2A markers found in executable:"
             grep -F "Phase2A" "$STRINGS_DUMP" | head -n 60 || true
             exit 1
           fi
-          echo "Phase 2A.12 sibling-XP3 runtime-host markers confirmed in built executable."
+          if ! grep -Fq "KiriPad 2A.13 Documents-anchor recovery" "$STRINGS_DUMP"; then
+            echo "ERROR: built IPA contains the host but not the patched StorageImpl engine marker"
+            grep -F "KiriPad 2A.13" "$STRINGS_DUMP" | head -n 80 || true
+            exit 1
+          fi
+          echo "Phase 2A.13 host + patched-engine markers confirmed in built executable."
 
       - name: Collect source metadata
         if: always()
@@ -923,7 +980,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A12-runtime-build-logs
+          name: KiriPad-Phase2A13-runtime-build-logs
           path: artifacts/runtime-build-logs
           if-no-files-found: warn
           retention-days: 14
@@ -932,7 +989,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A12-runtime-unsigned-ipa
+          name: KiriPad-Phase2A13-runtime-unsigned-ipa
           path: artifacts/KiriPad-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
@@ -941,7 +998,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A12-runtime-source-info
+          name: KiriPad-Phase2A13-runtime-source-info
           path: artifacts/runtime-source-info
           if-no-files-found: warn
           retention-days: 14
