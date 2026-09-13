@@ -1,0 +1,102 @@
+name: Inspect KrKr2 iOS Path Handling
+
+on:
+  workflow_dispatch:
+    inputs:
+      engine_ref:
+        description: "KrKr2-Next git ref (branch/tag/commit)"
+        required: true
+        default: "main"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  inspect-path-source:
+    name: Inspect iOS storage/path source
+    runs-on: macos-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Fetch KrKr2-Next source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none https://github.com/reAAAq/KrKr2-Next.git engine
+          cd engine
+          git checkout "${{ inputs.engine_ref }}"
+          git rev-parse HEAD
+
+      - name: Extract relevant source context
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="$GITHUB_WORKSPACE/ios-path-source.txt"
+          : > "$OUT"
+          cd engine
+
+          echo "===== commit =====" | tee -a "$OUT"
+          git rev-parse HEAD | tee -a "$OUT"
+          echo | tee -a "$OUT"
+
+          echo "===== exact iOS path log markers =====" | tee -a "$OUT"
+          grep -RniE --include='*.cpp' --include='*.cc' --include='*.cxx' --include='*.mm' --include='*.m' --include='*.h' --include='*.hpp' \
+            'iOS GetLocallyAccessibleName|homeDir count|prefixPath|AutoMountXP3|GetLocallyAccessibleName' \
+            cpp bridge platforms 2>/dev/null | tee -a "$OUT" || true
+
+          echo | tee -a "$OUT"
+          echo "===== source context around iOS GetLocallyAccessibleName =====" | tee -a "$OUT"
+
+          python3 - <<'PY' | tee -a "$OUT"
+          from pathlib import Path
+
+          roots = [Path('cpp'), Path('bridge'), Path('platforms')]
+          suffixes = {'.cpp', '.cc', '.cxx', '.mm', '.m', '.h', '.hpp'}
+          needles = ['iOS GetLocallyAccessibleName', 'homeDir count=', 'prefixPath']
+          found = False
+
+          for root in roots:
+              if not root.exists():
+                  continue
+              for p in root.rglob('*'):
+                  if not p.is_file() or p.suffix not in suffixes:
+                      continue
+                  try:
+                      text = p.read_text(encoding='utf-8', errors='replace')
+                  except Exception:
+                      continue
+                  if not any(n in text for n in needles):
+                      continue
+                  found = True
+                  lines = text.splitlines()
+                  hits = [i for i, line in enumerate(lines) if any(n in line for n in needles)]
+                  print(f'\n===== FILE: {p} =====')
+                  emitted = []
+                  for hit in hits:
+                      lo = max(0, hit - 70)
+                      hi = min(len(lines), hit + 110)
+                      if any(lo >= a and hi <= b for a, b in emitted):
+                          continue
+                      emitted.append((lo, hi))
+                      print(f'----- lines {lo+1}-{hi} (hit at {hit+1}) -----')
+                      for no in range(lo, hi):
+                          print(f'{no+1:6d}: {lines[no]}')
+
+          if not found:
+              print('NO MATCHING SOURCE FILE FOUND')
+          PY
+
+          echo | tee -a "$OUT"
+          echo "===== likely lower/case-fold operations near storage code =====" | tee -a "$OUT"
+          grep -RniE --include='*.cpp' --include='*.cc' --include='*.cxx' --include='*.mm' --include='*.h' --include='*.hpp' \
+            'tolower|ToLower|AsLower|lowercase|case.?insensitive|strn?casecmp|prefixPath' \
+            cpp/core bridge platforms 2>/dev/null | head -n 500 | tee -a "$OUT" || true
+
+      - name: Upload source inspection
+        uses: actions/upload-artifact@v4
+        with:
+          name: KiriPad-iOS-path-source
+          path: ios-path-source.txt
+          if-no-files-found: error
+          retention-days: 14
