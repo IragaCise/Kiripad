@@ -1,4 +1,4 @@
-name: Build KiriPad Phase 2A.16 Native Sanoba XP3 Filter
+name: Build KiriPad Phase 2A.16.1 Native Sanoba XP3 Filter Fix
 
 on:
   workflow_dispatch:
@@ -502,26 +502,41 @@ jobs:
           path = Path("cpp/plugins/xp3filter.cpp")
           text = path.read_text(encoding="utf-8")
 
-          needle = '''    if(info->SizeOfSelf != sizeof(tTVPXP3ExtractionFilterInfo))
-              TVPThrowExceptionMessage(
-                  TJS_W("Incompatible tTVPXP3ExtractionFilterInfo size"));
-          '''
-          if needle not in text:
-              raise SystemExit("XP3 wrapper insertion point not found")
+          # Phase 2A.16.1:
+          # Do not depend on an exact multi-line whitespace match.  Locate
+          # the extraction wrapper and insert immediately before the managed
+          # decoder fetch.
+          wrapper_name = "TVPXP3ArchiveExtractionFilterWrapper"
+          managed_line = "XP3FilterDecoder *decoder = FetchXP3Decoder();"
 
-          replacement = needle + r'''
-              // KiriPad Phase 2A.16 - Sanoba Witch native XP3 extraction filter.
+          wrapper = text.find(wrapper_name)
+          if wrapper < 0:
+              raise SystemExit("XP3 extraction wrapper not found")
+
+          managed = text.find(managed_line, wrapper)
+          if managed < 0:
+              raise SystemExit("FetchXP3Decoder line not found inside XP3 extraction wrapper")
+
+          line_start = text.rfind("\n", wrapper, managed)
+          if line_start < 0:
+              line_start = managed
+          else:
+              line_start += 1
+
+          marker = "KiriPad Phase 2A.16.1 - Sanoba Witch native XP3 extraction filter."
+          if marker in text:
+              raise SystemExit("Native Sanoba filter marker already present unexpectedly")
+
+          native_block = r'''    // KiriPad Phase 2A.16.1 - Sanoba Witch native XP3 extraction filter.
               //
-              // The Kirikiroid2 compatibility script is:
+              // Kirikiroid2 compatibility filter:
               //   k = h ^ 0x1DDB6E7A;
               //   k = h ^ 0x7A ^ (k >> 8) ^ (k >> 16) ^ (k >> 24);
               //   if(!(k & 0xFF)) k = 208;
               //   b.xor(0, l, k);
               //
-              // On iOS the managed TJS -> CBinaryAccessor::xor path crashes
-              // even with a byte-wise FuncXor implementation.  Execute the
-              // exact same transform directly on the XP3 extraction buffer
-              // and return before creating/fetching the managed decoder.
+              // Execute the identical transform directly on the current XP3
+              // extraction buffer and return before the managed TJS decoder.
               {
                   const tjs_uint32 h = info->FileHash;
                   tjs_uint32 k = h ^ (tjs_uint32)0x1DDB6E7A;
@@ -539,34 +554,35 @@ jobs:
                   static bool kiripadLogged = false;
                   if(!kiripadLogged) {
                       TVPAddImportantLog(
-                          TJS_W("(info) KiriPad 2A.16 native Sanoba XP3 filter active"));
+                          TJS_W("(info) KiriPad 2A.16.1 native Sanoba XP3 filter active"));
                       kiripadLogged = true;
                   }
                   return;
               }
+
           '''
 
-          text = text.replace(needle, replacement, 1)
+          text = text[:line_start] + native_block + text[line_start:]
           path.write_text(text, encoding="utf-8")
 
           patched = path.read_text(encoding="utf-8")
+          wrapper2 = patched.find(wrapper_name)
+          native2 = patched.find(marker, wrapper2)
+          managed2 = patched.find(managed_line, wrapper2)
+
+          if not (wrapper2 >= 0 and native2 > wrapper2 and managed2 > native2):
+              raise SystemExit("Native Sanoba filter was not inserted before FetchXP3Decoder")
+
           for token in (
-              "KiriPad Phase 2A.16 - Sanoba Witch native XP3 extraction filter.",
               "0x1DDB6E7A",
-              "native Sanoba XP3 filter active",
-              "return;",
+              "p[i] ^= xorval;",
+              "KiriPad 2A.16.1 native Sanoba XP3 filter active",
           ):
               if token not in patched:
                   raise SystemExit(f"Native Sanoba filter verification failed: {token}")
 
-          wrapper = patched.find("TVPXP3ArchiveExtractionFilterWrapper")
-          managed = patched.find("XP3FilterDecoder *decoder = FetchXP3Decoder()", wrapper)
-          native = patched.find("KiriPad Phase 2A.16 - Sanoba Witch", wrapper)
-          if not (wrapper >= 0 and native > wrapper and managed > native):
-              raise SystemExit("Native filter was not inserted before FetchXP3Decoder")
-
-          print("Installed native Sanoba Witch XP3 filter before managed TJS decoder.")
-          print(patched[wrapper:managed+1000])
+          print("Installed Phase 2A.16.1 native Sanoba XP3 filter.")
+          print(patched[wrapper2:managed2 + len(managed_line) + 300])
           PY
 
       - name: Configure and build upstream iOS engine only
@@ -1194,7 +1210,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A16-runtime-build-logs
+          name: KiriPad-Phase2A16_1-runtime-build-logs
           path: artifacts/runtime-build-logs
           if-no-files-found: warn
           retention-days: 14
@@ -1203,7 +1219,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A16-runtime-unsigned-ipa
+          name: KiriPad-Phase2A16_1-runtime-unsigned-ipa
           path: artifacts/KiriPad-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
@@ -1212,7 +1228,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A16-runtime-source-info
+          name: KiriPad-Phase2A16_1-runtime-source-info
           path: artifacts/runtime-source-info
           if-no-files-found: warn
           retention-days: 14
