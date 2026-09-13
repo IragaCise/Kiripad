@@ -1,4 +1,4 @@
-name: Build KiriPad Phase 2A.14 Frame Diagnostics
+name: Build KiriPad Phase 2A.15 Safe XP3 XOR
 
 on:
   workflow_dispatch:
@@ -406,6 +406,89 @@ jobs:
           for no, line in enumerate(text.splitlines(), 1):
               if "KiriPad iOS parent recovery" in line or "AutoMountXP3: nativeParent" in line:
                   print(f"{path}:{no}: {line}")
+          PY
+
+      - name: Patch XP3 filter XOR for iOS safety
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd .engine-src/KrKr2-Next
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("cpp/plugins/xp3filter.cpp")
+          text = path.read_text(encoding="utf-8")
+
+          start_marker = "tjs_error CBinaryAccessor::FuncXor(tjs_int numparams, tTJSVariant **param) {"
+          start = text.find(start_marker)
+          if start < 0:
+              raise SystemExit("FuncXor start not found")
+
+          end = text.find("\n}\n", start)
+          if end < 0:
+              raise SystemExit("FuncXor end not found")
+          end += len("\n}\n")
+
+          old = text[start:end]
+          if "*(uint64_t *)(buf) ^= k;" not in old:
+              print(old)
+              raise SystemExit("Expected vectorized uint64_t XOR implementation was not found")
+
+          new = r'''tjs_error CBinaryAccessor::FuncXor(tjs_int numparams, tTJSVariant **param) {
+              if(numparams < 3) {
+                  return TJS_E_BADPARAMCOUNT;
+              }
+
+              // KiriPad Phase 2A.15:
+              // Preserve the same XOR semantics while avoiding the upstream
+              // type-punned uint64_t writes that crash on the iOS/ARM64 path.
+              const tjs_int64 bufoff64 = param[0]->AsInteger();
+              const tjs_int64 len64 = param[1]->AsInteger();
+              const tjs_int64 xor64 = param[2]->AsInteger();
+
+              if(bufoff64 < 0 || len64 < 0) {
+                  return TJS_E_INVALIDPARAM;
+              }
+
+              const tjs_uint64 start =
+                  (tjs_uint64)m_curPos + (tjs_uint64)bufoff64;
+              if(start > (tjs_uint64)m_length) {
+                  return TJS_E_INVALIDPARAM;
+              }
+
+              const tjs_uint64 available = (tjs_uint64)m_length - start;
+              if((tjs_uint64)len64 > available) {
+                  return TJS_E_INVALIDPARAM;
+              }
+
+              unsigned char *buf = m_buff + start;
+              const unsigned char xorval = (unsigned char)xor64;
+              for(tjs_uint64 i = 0; i < (tjs_uint64)len64; ++i) {
+                  buf[i] ^= xorval;
+              }
+
+              return TJS_S_OK;
+          }
+          '''
+
+          text = text[:start] + new + text[end:]
+          path.write_text(text, encoding="utf-8")
+
+          patched = path.read_text(encoding="utf-8")
+          for token in (
+              "KiriPad Phase 2A.15:",
+              "const tjs_uint64 available",
+              "buf[i] ^= xorval;",
+          ):
+              if token not in patched:
+                  raise SystemExit(f"XP3 XOR patch verification failed: {token}")
+
+          if "*(uint64_t *)(buf) ^= k;" in patched:
+              raise SystemExit("Unsafe vectorized XOR is still present")
+
+          print("Patched CBinaryAccessor::FuncXor with checked byte-wise XOR.")
+          p = patched.find(start_marker)
+          print(patched[p:p+2200])
           PY
 
       - name: Configure and build upstream iOS engine only
@@ -1033,7 +1116,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A14-runtime-build-logs
+          name: KiriPad-Phase2A15-runtime-build-logs
           path: artifacts/runtime-build-logs
           if-no-files-found: warn
           retention-days: 14
@@ -1042,7 +1125,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A14-runtime-unsigned-ipa
+          name: KiriPad-Phase2A15-runtime-unsigned-ipa
           path: artifacts/KiriPad-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
@@ -1051,7 +1134,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A14-runtime-source-info
+          name: KiriPad-Phase2A15-runtime-source-info
           path: artifacts/runtime-source-info
           if-no-files-found: warn
           retention-days: 14
