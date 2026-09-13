@@ -1,4 +1,4 @@
-name: Build KiriPad Phase 2A.9 Runtime
+name: Build KiriPad Phase 2A.9.1 Verify Fix
 
 on:
   workflow_dispatch:
@@ -713,8 +713,16 @@ jobs:
             exit 1
           fi
           echo "Built executable: $APP_BIN"
-          if ! strings "$APP_BIN" | grep -Fq "[Phase2A.9] owner thread: main="; then
+          # Do not pipe `strings` into `grep -q` while `pipefail` is enabled.
+          # grep -q exits as soon as it finds the marker, which closes the pipe;
+          # macOS `strings` then reports "failed to flush output" (SIGPIPE), making
+          # a successful marker match look like a failed pipeline.
+          STRINGS_DUMP="$RUNNER_TEMP/kiripad-runtime-strings.txt"
+          strings "$APP_BIN" > "$STRINGS_DUMP"
+          if ! grep -Fq "[Phase2A.9] owner thread: main=" "$STRINGS_DUMP"; then
             echo "ERROR: built IPA does not contain the Phase 2A.9 runtime-host marker"
+            echo "Nearby Phase2A markers found in executable:"
+            grep -F "Phase2A" "$STRINGS_DUMP" | head -n 40 || true
             exit 1
           fi
           echo "Phase 2A.9 runtime-host marker confirmed in built executable."
