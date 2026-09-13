@@ -1,4 +1,4 @@
-name: Build KiriPad Phase 2A.6 Runtime
+name: Build KiriPad Phase 2A.7 Runtime
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
       engine_ref:
         description: "KrKr2-Next git ref (branch/tag/commit)"
         required: true
-        default: "main"
+        default: "1abd1ed4e8aec7abd5d2524c3a9ad7886880602f"
         type: string
 
 env:
@@ -189,6 +189,39 @@ jobs:
                       print(f"{p}:{no}: {line}")
           PY
 
+      - name: Patch iOS sandbox path recovery for Unicode/case-preserving paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd .engine-src/KrKr2-Next
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("cpp/core/base/impl/StorageImpl.cpp")
+          text = path.read_text(encoding="utf-8")
+
+          old = "if(!_utf8_strcasecmp(actualPrefix.c_str(), dir.c_str())) {"
+          new = "if(!_utf8_strcasecmp_nfc(actualPrefix.c_str(), dir.c_str())) { // KiriPad Phase 2A.7: iOS sandbox prefix may differ by case/Unicode normalization"
+
+          count = text.count(old)
+          if count != 1:
+              print(f"Expected exactly one iOS sandbox prefix comparison, found {count}.")
+              marker = "std::string actualPrefix = prefix.substr(0, dir.length());"
+              pos = text.find(marker)
+              if pos >= 0:
+                  print("===== nearby source =====")
+                  print(text[max(0, pos-800):pos+1600])
+              raise SystemExit(1)
+
+          text = text.replace(old, new, 1)
+          path.write_text(text, encoding="utf-8")
+
+          print("Patched iOS sandbox prefix comparison:")
+          for no, line in enumerate(text.splitlines(), 1):
+              if "actualPrefix.c_str(), dir.c_str()" in line:
+                  print(f"{path}:{no}: {line}")
+          PY
+
       - name: Configure and build upstream iOS engine only
         shell: bash
         run: |
@@ -341,7 +374,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A5-runtime-build-logs
+          name: KiriPad-Phase2A7-runtime-build-logs
           path: artifacts/runtime-build-logs
           if-no-files-found: warn
           retention-days: 14
@@ -350,7 +383,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A5-runtime-unsigned-ipa
+          name: KiriPad-Phase2A7-runtime-unsigned-ipa
           path: artifacts/KiriPad-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
@@ -359,7 +392,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A4-runtime-source-info
+          name: KiriPad-Phase2A7-runtime-source-info
           path: artifacts/runtime-source-info
           if-no-files-found: warn
           retention-days: 14
