@@ -1,0 +1,164 @@
+name: KiriPad Phase 2A.25 TJS Caller Probe
+
+on:
+  workflow_dispatch:
+    inputs:
+      engine_ref:
+        description: "KrKr2-Next git ref (branch/tag/commit)"
+        required: true
+        default: "1abd1ed4e8aec7abd5d2524c3a9ad7886880602f"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: Inspect System.inform caller and TJS stack tracer
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout KiriPad
+        uses: actions/checkout@v4
+
+      - name: Fetch pinned KrKr2-Next source
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .engine-src
+          mkdir -p .engine-src
+          git clone --filter=blob:none https://github.com/reAAAq/KrKr2-Next.git .engine-src/KrKr2-Next
+          cd .engine-src/KrKr2-Next
+          git checkout "${{ inputs.engine_ref }}"
+          git rev-parse HEAD | tee ../../engine-commit.txt
+
+      - name: Probe System.inform and TJS caller tracing internals
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd .engine-src/KrKr2-Next
+
+          OUT="$GITHUB_WORKSPACE/tjs-caller-probe.txt"
+          : > "$OUT"
+
+          {
+            echo "KiriPad Phase 2A.25 TJS Caller Probe"
+            echo "Commit: $(git rev-parse HEAD)"
+            echo
+          } >> "$OUT"
+
+          python3 - <<'PY' | tee -a "$OUT"
+          from pathlib import Path
+          import re
+
+          def dump_window(path, center, before=90, after=130):
+              p = Path(path)
+              if not p.exists():
+                  print(f"\n===== MISSING: {path} =====")
+                  return
+              lines = p.read_text(encoding="utf-8", errors="ignore").splitlines()
+              lo = max(0, center - 1 - before)
+              hi = min(len(lines), center - 1 + after + 1)
+              print(f"\n===== {path}:{center} ({lo+1}-{hi}) =====")
+              for i in range(lo, hi):
+                  print(f"{i+1:5d}: {lines[i]}")
+              print("===== end =====")
+
+          # Exact System.inform implementation region discovered by 2A.23.
+          dump_window("cpp/core/base/impl/SystemImpl.cpp", 686, 120, 100)
+
+          # VM execution and stack-tracer integration.
+          dump_window("cpp/core/tjs2/tjsInterCodeExec.cpp", 700, 110, 130)
+          dump_window("cpp/core/tjs2/tjsInterCodeExec.cpp", 885, 90, 520)
+          dump_window("cpp/core/tjs2/tjsInterCodeExec.cpp", 1368, 80, 120)
+
+          # Stack tracer implementation / declarations.
+          for candidate in [
+              "cpp/core/tjs2/tjsDebug.cpp",
+              "cpp/core/tjs2/tjsDebug.h",
+              "cpp/core/tjs2/tjsInterCodeGen.h",
+              "cpp/core/tjs2/tjsScriptBlock.cpp",
+              "cpp/core/tjs2/tjsScriptBlock.h",
+          ]:
+              p = Path(candidate)
+              if not p.exists():
+                  continue
+              lines = p.read_text(encoding="utf-8", errors="ignore").splitlines()
+              hits = []
+              for i, line in enumerate(lines):
+                  if any(key in line for key in [
+                      "TJSStackTracer",
+                      "StackTracer",
+                      "GetLineDescriptionString",
+                      "CodePosToSrcPos",
+                      "SrcPosToLine",
+                      "GetCurrentContext",
+                      "GetBlockName",
+                      "GetTrace",
+                  ]):
+                      hits.append(i)
+              if not hits:
+                  continue
+              # Merge nearby hit windows.
+              ranges = []
+              for i in hits:
+                  lo = max(0, i - 45)
+                  hi = min(len(lines), i + 80)
+                  if ranges and lo <= ranges[-1][1] + 15:
+                      ranges[-1] = (ranges[-1][0], max(ranges[-1][1], hi))
+                  else:
+                      ranges.append((lo, hi))
+              for lo, hi in ranges[:8]:
+                  print(f"\n===== {candidate}:{lo+1}-{hi} =====")
+                  for n in range(lo, hi):
+                      print(f"{n+1:5d}: {lines[n]}")
+                  print("===== end =====")
+
+          # Search all TJS2 sources for stack tracer functions and VM call opcodes.
+          print("\n===== Exact symbol / opcode search =====")
+          roots = [Path("cpp/core/tjs2")]
+          pats = [
+              re.compile(r"TJSStackTracer"),
+              re.compile(r"\bVM_CALL\b"),
+              re.compile(r"\bVM_CALLD\b"),
+              re.compile(r"\bVM_CALLI\b"),
+              re.compile(r"\.FuncCall\s*\("),
+              re.compile(r"FuncCall\s*\("),
+              re.compile(r"CodePosToSrcPos"),
+              re.compile(r"GetLineDescriptionString"),
+          ]
+          count = 0
+          for root in roots:
+              for p in root.rglob("*"):
+                  if not p.is_file() or p.suffix not in {".cpp",".h",".hpp",".cc",".cxx"}:
+                      continue
+                  lines = p.read_text(encoding="utf-8", errors="ignore").splitlines()
+                  for i, line in enumerate(lines):
+                      if any(rx.search(line) for rx in pats):
+                          print(f"{p}:{i+1}: {line}")
+                          count += 1
+                          if count >= 700:
+                              print("... search capped at 700 matches ...")
+                              raise SystemExit(0)
+          PY
+
+          {
+            echo
+            echo "=== Probe complete ==="
+            echo "No source files were modified and no engine build was performed."
+          } >> "$OUT"
+
+          echo
+          echo "===== probe tail ====="
+          tail -n 260 "$OUT"
+
+      - name: Upload TJS caller probe
+        uses: actions/upload-artifact@v4
+        with:
+          name: KiriPad-Phase2A25-tjs-caller-probe
+          path: |
+            tjs-caller-probe.txt
+            engine-commit.txt
+          if-no-files-found: error
+          retention-days: 14
