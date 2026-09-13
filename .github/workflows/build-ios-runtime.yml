@@ -1,4 +1,4 @@
-name: Build KiriPad Phase 2A.3 Runtime
+name: Build KiriPad Phase 2A.4 Runtime
 
 on:
   workflow_dispatch:
@@ -25,35 +25,20 @@ jobs:
       - name: Checkout KiriPad
         uses: actions/checkout@v4
 
-      - name: Setup Flutter (required by upstream iOS build script)
-        uses: subosito/flutter-action@v2
-        with:
-          channel: stable
-          cache: true
-
-      - name: Install upstream build prerequisites
+      - name: Install native build prerequisites
         shell: bash
         env:
           HOMEBREW_NO_AUTO_UPDATE: "1"
         run: |
           set -euo pipefail
-
-          # KrKr2-Next uses vcpkg host tools while cross-compiling for iOS.
-          # gperf's current vcpkg port requires GNU autotools on macOS, and
-          # the upstream CMake configuration uses Ninja.
-          brew install ninja autoconf automake autoconf-archive libtool gettext pkgconf
+          brew install ninja autoconf automake autoconf-archive libtool gettext pkgconf bison nasm yasm
 
           BREW_PREFIX="$(brew --prefix)"
           GETTEXT_PREFIX="$(brew --prefix gettext)"
           LIBTOOL_PREFIX="$(brew --prefix libtool)"
           AUTOCONF_ARCHIVE_PREFIX="$(brew --prefix autoconf-archive)"
+          BISON_PREFIX="$(brew --prefix bison)"
 
-          # gettext is keg-only on macOS/Homebrew and GNU libtool uses a gnubin
-          # directory for unprefixed tool names. vcpkg's autoreconf subprocesses
-          # need both locations explicitly.
-          # Keep Apple's /usr/bin/libtool visible. KrKr2-Next later uses
-          # `libtool -static`, which is the Apple tool. We only expose GNU
-          # libtoolize through a tiny shim for autoreconf/vcpkg.
           TOOL_SHIMS="$RUNNER_TEMP/kiripad-tools"
           mkdir -p "$TOOL_SHIMS"
           if [[ -x "$LIBTOOL_PREFIX/bin/glibtoolize" ]]; then
@@ -65,33 +50,26 @@ jobs:
           printf '%s\n' \
             "$TOOL_SHIMS" \
             "$GETTEXT_PREFIX/bin" \
+            "$BISON_PREFIX/bin" \
             "$BREW_PREFIX/bin" >> "$GITHUB_PATH"
 
           ACLOCAL_COMBINED="$AUTOCONF_ARCHIVE_PREFIX/share/aclocal:$GETTEXT_PREFIX/share/aclocal:$LIBTOOL_PREFIX/share/aclocal:$BREW_PREFIX/share/aclocal"
           echo "ACLOCAL_PATH=$ACLOCAL_COMBINED" >> "$GITHUB_ENV"
           echo "KIRIPAD_TOOL_SHIMS=$TOOL_SHIMS" >> "$GITHUB_ENV"
 
-          # Make the tools visible in this step as well as all following steps.
-          export PATH="$TOOL_SHIMS:$GETTEXT_PREFIX/bin:$BREW_PREFIX/bin:$PATH"
+          export PATH="$TOOL_SHIMS:$GETTEXT_PREFIX/bin:$BISON_PREFIX/bin:$BREW_PREFIX/bin:$PATH"
           export ACLOCAL_PATH="$ACLOCAL_COMBINED${ACLOCAL_PATH:+:$ACLOCAL_PATH}"
           hash -r
 
-          echo "Homebrew prefix: $BREW_PREFIX"
-          echo "PATH: $PATH"
-          echo "ACLOCAL_PATH: $ACLOCAL_PATH"
-          command -v ninja
-          ninja --version
-          command -v autoconf
-          autoconf --version | head -n 1
-          command -v automake
-          automake --version | head -n 1
-          command -v aclocal
-          aclocal --version | head -n 1
-          command -v autoreconf
-          command -v autopoint
-          autopoint --version | head -n 1
-          command -v libtoolize || command -v glibtoolize
-          flutter --version
+          echo "cmake:     $(command -v cmake)"
+          echo "ninja:     $(command -v ninja)"
+          echo "bison:     $(command -v bison)"
+          echo "nasm:      $(command -v nasm)"
+          echo "yasm:      $(command -v yasm)"
+          echo "autoreconf:$(command -v autoreconf)"
+          echo "autopoint: $(command -v autopoint)"
+          echo "libtoolize:$(command -v libtoolize || true)"
+          echo "apple libtool: /usr/bin/libtool"
 
       - name: Cache vcpkg binary archives
         uses: actions/cache@v4
@@ -104,6 +82,7 @@ jobs:
       - name: Fetch KrKr2-Next source
         shell: bash
         run: |
+          set -euo pipefail
           rm -rf .engine-src
           mkdir -p .engine-src
           git clone --filter=blob:none https://github.com/reAAAq/KrKr2-Next.git .engine-src/KrKr2-Next
@@ -113,93 +92,136 @@ jobs:
           printf 'Source: https://github.com/reAAAq/KrKr2-Next\nRef: %s\nCommit: %s\n' \
             "${{ inputs.engine_ref }}" "$(git rev-parse HEAD)" > ../../engine-source.txt
 
-      - name: Build upstream iOS engine archives
+      - name: Configure and build upstream iOS engine only
         shell: bash
         run: |
-          # Reassert Homebrew paths here so vcpkg/CMake subprocesses can see
-          # the host build tools even if the runner image PATH changes.
+          set -u
+          ROOT="$PWD"
+          ENGINE="$ROOT/.engine-src/KrKr2-Next"
+          LOGDIR="$ROOT/artifacts/runtime-build-logs"
+          mkdir -p "$LOGDIR"
+
           BREW_PREFIX="$(brew --prefix)"
           GETTEXT_PREFIX="$(brew --prefix gettext)"
           LIBTOOL_PREFIX="$(brew --prefix libtool)"
           AUTOCONF_ARCHIVE_PREFIX="$(brew --prefix autoconf-archive)"
+          BISON_PREFIX="$(brew --prefix bison)"
           TOOL_SHIMS="${KIRIPAD_TOOL_SHIMS:-$RUNNER_TEMP/kiripad-tools}"
-          mkdir -p "$TOOL_SHIMS"
-          if [[ ! -e "$TOOL_SHIMS/libtoolize" ]]; then
-            if [[ -x "$LIBTOOL_PREFIX/bin/glibtoolize" ]]; then
-              ln -sf "$LIBTOOL_PREFIX/bin/glibtoolize" "$TOOL_SHIMS/libtoolize"
-            elif [[ -x "$LIBTOOL_PREFIX/libexec/gnubin/libtoolize" ]]; then
-              ln -sf "$LIBTOOL_PREFIX/libexec/gnubin/libtoolize" "$TOOL_SHIMS/libtoolize"
-            fi
-          fi
-          export PATH="$TOOL_SHIMS:$GETTEXT_PREFIX/bin:$BREW_PREFIX/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+          export PATH="$TOOL_SHIMS:$GETTEXT_PREFIX/bin:$BISON_PREFIX/bin:$BREW_PREFIX/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
           export ACLOCAL_PATH="$AUTOCONF_ARCHIVE_PREFIX/share/aclocal:$GETTEXT_PREFIX/share/aclocal:$LIBTOOL_PREFIX/share/aclocal:$BREW_PREFIX/share/aclocal${ACLOCAL_PATH:+:$ACLOCAL_PATH}"
           hash -r
 
-          echo "Build prerequisite check:"
-          command -v cmake && cmake --version | head -n 1
-          command -v ninja && ninja --version
-          command -v autoconf && autoconf --version | head -n 1
-          command -v automake && automake --version | head -n 1
-          command -v aclocal && aclocal --version | head -n 1
-          command -v autoreconf
-          command -v autopoint && autopoint --version | head -n 1
-          command -v libtoolize || command -v glibtoolize
+          cd "$ENGINE"
 
-          dump_vcpkg_failure_logs() {
-            echo ""
-            echo "===== vcpkg failure diagnostics ====="
-            local root=".devtools/vcpkg/buildtrees"
-            if [[ -d "$root/libexif" ]]; then
-              for f in "$root"/libexif/autoconf-*-err.log "$root"/libexif/autoconf-*-out.log; do
-                [[ -f "$f" ]] || continue
-                echo "----- $f (last 200 lines) -----"
-                tail -n 200 "$f" || true
-              done
-            fi
-            if [[ -f out/ios/release/vcpkg-manifest-install.log ]]; then
-              echo "----- vcpkg-manifest-install.log (last 200 lines) -----"
-              tail -n 200 out/ios/release/vcpkg-manifest-install.log || true
-            fi
-          }
-
-          cd .engine-src/KrKr2-Next
-
-          # IMPORTANT: Do not call `cmake --preset` directly here.
-          # KrKr2-Next's build/build_ios.sh discovers/bootstraps vcpkg and
-          # exports VCPKG_ROOT immediately before invoking CMake. Calling CMake
-          # first leaves VCPKG_ROOT empty, producing /scripts/buildsystems/vcpkg.cmake.
-          echo "Apple libtool: $(command -v libtool)"
-          /usr/bin/libtool -V 2>&1 | head -n 1 || true
-          echo "GNU libtoolize shim: $(command -v libtoolize || true)"
+          # Upstream CMakeLists.txt consumes VCPKG_ROOT before project().
+          if [[ ! -d .devtools/vcpkg/.git ]]; then
+            mkdir -p .devtools
+            git clone https://github.com/microsoft/vcpkg.git .devtools/vcpkg
+            (cd .devtools/vcpkg && ./bootstrap-vcpkg.sh -disableMetrics)
+          fi
+          export VCPKG_ROOT="$PWD/.devtools/vcpkg"
+          echo "VCPKG_ROOT=$VCPKG_ROOT" | tee "$LOGDIR/environment.txt"
+          echo "PATH=$PATH" >> "$LOGDIR/environment.txt"
+          echo "ACLOCAL_PATH=$ACLOCAL_PATH" >> "$LOGDIR/environment.txt"
+          cmake --version >> "$LOGDIR/environment.txt" 2>&1 || true
+          ninja --version >> "$LOGDIR/environment.txt" 2>&1 || true
 
           set +e
-          bash ./build.sh ios release --jobs=4
-          UPSTREAM_STATUS=$?
-          set -e
-          if [[ $UPSTREAM_STATUS -ne 0 ]]; then
-            dump_vcpkg_failure_logs
+          cmake --preset "iOS Release Config" 2>&1 | tee "$LOGDIR/configure.log"
+          CONFIG_STATUS=${PIPESTATUS[0]}
+          if [[ $CONFIG_STATUS -ne 0 ]]; then
+            echo "CMake configure failed with status $CONFIG_STATUS"
+            exit $CONFIG_STATUS
           fi
-          cd ../..
 
-          LIBDIR=".engine-src/KrKr2-Next/bridge/flutter_engine_bridge/ios/Libs"
-          PROJECT_LIB="$LIBDIR/libengine_project.a"
-          VENDOR_LIB="$LIBDIR/libengine_vendors.a"
+          cmake --build --preset "iOS Release Build" -- -j4 2>&1 | tee "$LOGDIR/build.log"
+          BUILD_STATUS=${PIPESTATUS[0]}
+          set -e
 
-          if [[ ! -f "$PROJECT_LIB" || ! -f "$VENDOR_LIB" ]]; then
-            echo "Upstream build status: $UPSTREAM_STATUS"
-            echo "Required merged engine archives were not produced."
-            find .engine-src/KrKr2-Next -name 'libengine*.a' -print || true
+          if [[ $BUILD_STATUS -ne 0 ]]; then
+            echo "CMake build failed with status $BUILD_STATUS"
+            echo "===== likely fatal lines ====="
+            grep -nE '(^|[^A-Za-z])(fatal error:|error:|FAILED:|Undefined symbols|ld: |clang: error|CMake Error)' "$LOGDIR/build.log" | tail -n 120 || true
+            echo "===== build.log tail ====="
+            tail -n 160 "$LOGDIR/build.log" || true
+            exit $BUILD_STATUS
+          fi
+
+          CMAKE_BUILD_DIR="$PWD/out/ios/release"
+          ENGINE_LIB="$CMAKE_BUILD_DIR/bridge/engine_api/libengine_api.a"
+          if [[ ! -f "$ENGINE_LIB" ]]; then
+            echo "Engine static library not found: $ENGINE_LIB"
+            find "$CMAKE_BUILD_DIR" -name '*.a' -print | tee "$LOGDIR/static-libraries.txt" || true
             exit 1
           fi
 
-          # The upstream script may fail later in its Flutter app stage even after
-          # the static engine archives we need are already complete. We only need
-          # those archives for KiriPad.
-          echo "Upstream build status: $UPSTREAM_STATUS"
-          ls -lh "$PROJECT_LIB" "$VENDOR_LIB"
+          echo "Engine API archive: $ENGINE_LIB"
+
+          # Reproduce only upstream Step 2 (archive merge). We deliberately do
+          # not build the upstream Flutter app; KiriPad is our iOS host.
+          PLUGIN_LIBS_DIR="$PWD/bridge/flutter_engine_bridge/ios/Libs"
+          mkdir -p "$PLUGIN_LIBS_DIR"
+          MERGE_TMPDIR="$(mktemp -d)"
+          trap 'rm -rf "$MERGE_TMPDIR"' EXIT
+
+          PROJECT_LIBS=()
+          while IFS= read -r -d '' lib; do PROJECT_LIBS+=("$lib"); done < <(
+            find "$CMAKE_BUILD_DIR" -name '*.a' \
+              -not -path '*/vcpkg_installed/*' \
+              -not -path '*/cpp/plugins/*' -print0
+          )
+          printf '%s\n' "${PROJECT_LIBS[@]}" > "$LOGDIR/project-libraries.txt"
+          if [[ ${#PROJECT_LIBS[@]} -eq 0 ]]; then
+            echo "No project static libraries found."
+            exit 1
+          fi
+
+          /usr/bin/libtool -static -o "$MERGE_TMPDIR/libengine_project_base.a" "${PROJECT_LIBS[@]}"
+          ar t "$MERGE_TMPDIR/libengine_project_base.a" | sort -u > "$MERGE_TMPDIR/project_objs.txt"
+
+          UNIQUE_OBJS=()
+          while IFS= read -r -d '' sublib; do
+            sublibname="$(basename "$sublib" .a)"
+            extractdir="$MERGE_TMPDIR/extract_${sublibname}"
+            mkdir -p "$extractdir"
+            (cd "$extractdir" && ar x "$sublib")
+            for obj in "$extractdir"/*.o; do
+              [[ -f "$obj" ]] || continue
+              objname="$(basename "$obj")"
+              if ! grep -qx "$objname" "$MERGE_TMPDIR/project_objs.txt"; then
+                UNIQUE_OBJS+=("$obj")
+              fi
+            done
+          done < <(find "$CMAKE_BUILD_DIR/cpp/plugins" -mindepth 3 -name '*.a' -print0 2>/dev/null)
+
+          if [[ ${#UNIQUE_OBJS[@]} -gt 0 ]]; then
+            /usr/bin/libtool -static -o "$PLUGIN_LIBS_DIR/libengine_project.a" \
+              "$MERGE_TMPDIR/libengine_project_base.a" "${UNIQUE_OBJS[@]}"
+          else
+            cp "$MERGE_TMPDIR/libengine_project_base.a" "$PLUGIN_LIBS_DIR/libengine_project.a"
+          fi
+
+          VCPKG_LIB_DIR="$CMAKE_BUILD_DIR/vcpkg_installed/arm64-ios/lib"
+          VCPKG_EXCLUDE_RE='^(libpng\.a|libjpeg\.a|libwebpdecoder\.a|libharfbuzz-subset\.a)$'
+          VCPKG_LIBS=()
+          while IFS= read -r -d '' lib; do
+            base="$(basename "$lib")"
+            [[ "$base" =~ $VCPKG_EXCLUDE_RE ]] && continue
+            VCPKG_LIBS+=("$lib")
+          done < <(find "$VCPKG_LIB_DIR" -maxdepth 1 -name '*.a' -print0)
+          printf '%s\n' "${VCPKG_LIBS[@]}" > "$LOGDIR/vendor-libraries.txt"
+          if [[ ${#VCPKG_LIBS[@]} -eq 0 ]]; then
+            echo "No vcpkg static libraries found."
+            exit 1
+          fi
+          /usr/bin/libtool -static -o "$PLUGIN_LIBS_DIR/libengine_vendors.a" "${VCPKG_LIBS[@]}"
+
+          cd "$ROOT"
           mkdir -p Vendor/KrKr2Next/Libs
-          cp "$PROJECT_LIB" Vendor/KrKr2Next/Libs/libengine_project.a
-          cp "$VENDOR_LIB" Vendor/KrKr2Next/Libs/libengine_vendors.a
+          cp "$ENGINE/bridge/flutter_engine_bridge/ios/Libs/libengine_project.a" Vendor/KrKr2Next/Libs/
+          cp "$ENGINE/bridge/flutter_engine_bridge/ios/Libs/libengine_vendors.a" Vendor/KrKr2Next/Libs/
+          ls -lh Vendor/KrKr2Next/Libs/*.a
 
       - name: Build KiriPad with runtime linked
         shell: bash
@@ -208,27 +230,39 @@ jobs:
           KIRIPAD_WITH_ENGINE: "1"
         run: bash ./ci/build_unsigned_ipa.sh
 
-      - name: Collect build metadata
+      - name: Collect source metadata
+        if: always()
         shell: bash
         run: |
           mkdir -p artifacts/runtime-source-info
-          cp engine-commit.txt engine-source.txt artifacts/runtime-source-info/
+          cp engine-commit.txt engine-source.txt artifacts/runtime-source-info/ 2>/dev/null || true
           if [[ -f .engine-src/KrKr2-Next/LICENSE ]]; then
             cp .engine-src/KrKr2-Next/LICENSE artifacts/runtime-source-info/KrKr2-Next-LICENSE.txt
           fi
 
-      - name: Upload runtime unsigned IPA
+      - name: Upload runtime build logs
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A-runtime-unsigned-ipa
+          name: KiriPad-Phase2A4-runtime-build-logs
+          path: artifacts/runtime-build-logs
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload runtime unsigned IPA
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: KiriPad-Phase2A4-runtime-unsigned-ipa
           path: artifacts/KiriPad-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
 
       - name: Upload exact upstream source metadata
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A-runtime-source-info
+          name: KiriPad-Phase2A4-runtime-source-info
           path: artifacts/runtime-source-info
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 14
