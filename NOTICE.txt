@@ -1,4 +1,12 @@
-KiriPad Phase 1 starter kit
-Original scaffold generated for the user.
-No Kirikiri engine source or commercial game data is bundled.
-External projects are fetched only by optional scripts and retain their own licenses.
+KiriPad Phase 2A
+
+This source archive does not contain commercial game assets and does not contain
+KrKr2-Next binaries. The optional runtime GitHub Actions workflow fetches the
+upstream source at build time and records the exact source commit in the build
+artifacts.
+
+KrKr2-Next: https://github.com/reAAAq/KrKr2-Next
+License: GNU GPL version 3 or later (see upstream LICENSE and this project's LICENSE).
+
+Use KiriPad only with game data you are authorized to use. Phase 2A does not
+include DRM/copy-protection bypass functionality.

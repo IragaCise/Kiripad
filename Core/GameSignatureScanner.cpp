@@ -107,7 +107,7 @@ ScanResult scanGameDirectory(const std::filesystem::path& root,
 
 std::string formatScanResult(const ScanResult& r, const std::filesystem::path& root) {
     std::ostringstream out;
-    out << "KiriPad Phase 1 診断\n";
+    out << "ファイル構成診断\n";
     out << "Path: " << root.u8string() << "\n\n";
     out << "Kirikiri系の可能性: " << (r.likelyKirikiri ? "高い" : "未確認") << "\n";
     out << "data.xp3: " << (r.hasDataXp3 ? "あり" : "なし") << "\n";

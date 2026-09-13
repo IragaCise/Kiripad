@@ -1,129 +1,91 @@
-# KiriPad Phase 1
+# KiriPad Phase 2A
 
-iPad上で吉里吉里系ゲームの互換ランタイムを作るための最初の開発キットです。
-最初の基準作品は **サノバウィッチ**、次段階で **みるくふぁくとりーのスパイ学園** を対象にする想定です。
+KiriPad Phase 2A は、所有している吉里吉里系ゲームを iPad 上で検証するための実験プロジェクトです。
+今回の目標は「サノバウィッチ」を最終的に起動できる互換ランタイムを作ることですが、Phase 2A ではまず **どこで起動が止まるかを正確なログとして得る** ことを優先します。
 
-## Phase 1でできること
+## Phase 2Aで追加したもの
 
-- iPadの「ファイル」からゲームフォルダを選択
-- セキュリティスコープ付きURL経由でフォルダを読む
-- `data.xp3` / `startup.tjs` / `patch.tjs` / `config.tjs` を検出
-- XP3 / TJS / KAG(KS) / DLL / TPM / EXE / 動画 / 音声をカウント
-- Windowsネイティブプラグイン候補を表示
-- ゲームデータの展開、復号、改変は行わない
+- 選択フォルダが `Documents` のような親フォルダでも、直下/浅い階層から `data.xp3` を持つゲームルートを自動検出
+- DLL/TPM のインベントリと優先度表示
+- 既に平文で存在する TJS/KS 内の DLL/TPM 参照を読み取り（XP3の展開・復号はしません）
+- KrKr2-Next の public `engine_api` に接続する実験ランタイムホスト
+- startup ログの iPad 画面表示
+- RGBA フレームが取得できる場合の画面表示
+- iPad タッチを pointer down/move/up としてランタイムへ送信
+- GitHub Actions で「軽量プローブIPA」と「実ランタイムIPA」を別々にビルド
 
-**まだゲーム本編は起動しません。** Phase 1は「何が足りないかを正確に測る」ための土台です。
+## 重要: 2つのWorkflow
 
-## 必要なもの
+### 1. Build KiriPad iOS
 
-### Macを使う場合
+軽量版です。KrKr2-Next をリンクしません。
 
-- macOS
-- Xcode（現在の安定版を推奨）
-- CMake 3.21以上
-- Apple ID（実機署名用）
-- iPad（iPadOS 15以上を当面の最低ラインに設定）
+- ビルドが速い
+- ゲームルート解決
+- ファイル診断
+- 起動前プローブ
+- ランタイム起動ボタンは無効
 
-### Macを持っていない場合
+### 2. Build KiriPad Phase 2A Runtime
 
-- GitHubアカウント
-- Windows PCなど、GitHubを操作できる環境
-- iPad
+実験ランタイム版です。GitHub Actions が KrKr2-Next のソースを取得し、iOS向け静的ライブラリをビルドして KiriPad にリンクします。
 
-`.github/workflows/build-ios.yml` を追加済みです。GitHub ActionsのmacOSランナーでXcodeビルドし、`KiriPad-unsigned.ipa` をArtifactsから取得できます。詳しくは `docs/GITHUB_ACTIONS_NO_MAC.md` を参照してください。
+初回は vcpkg / ANGLE / FFmpeg 等の依存関係ビルドがあるため、かなり時間がかかる可能性があります。
 
+Artifacts:
 
-## 0. Macなし：GitHub ActionsでIPAを作る
+- `KiriPad-Phase2A-runtime-unsigned-ipa`
+- `KiriPad-Phase2A-runtime-source-info`
 
-このプロジェクトをGitHubへアップロードし、
+後者には、ビルドに使った KrKr2-Next の正確な Git commit とライセンスを保存します。
 
-```text
-Actions → Build KiriPad iOS → Run workflow
-```
+## 実ランタイム版の手順
 
-を実行すると、GitHubのmacOS環境でビルドされます。成功後のArtifactsから `KiriPad-unsigned-ipa` を取得できます。
+1. このフォルダの中身を GitHub リポジトリへアップロード/上書きします。
+2. GitHub → Actions → `Build KiriPad Phase 2A Runtime` を開きます。
+3. `Run workflow` を押します。`engine_ref` は最初は `main` のままで構いません。
+4. 成功後、Artifacts の `KiriPad-Phase2A-runtime-unsigned-ipa` をダウンロードします。
+5. ZIP内の `KiriPad-unsigned.ipa` を Sideloadly 等で自分の iPad 用に署名してインストールします。
+6. KiriPad を起動し、ゲームフォルダを選びます。
+7. `起動前プローブ` を押して静的なプラグイン情報を確認します。
+8. `ランタイム起動` を押します。
+9. 画面下のログに `startup FAILED`、`engine_open_game_async failed`、プラグイン名などが出たら、そのログを保存/スクリーンショットしてください。
 
-これは **unsigned IPA** です。実機インストール前に自分のApple ID/証明書で署名する必要があります。ゲームデータはGitHubへアップロードしません。
+Bundle ID は Phase 1 と同じ `dev.kiripad.phase1` を既定にしているため、同じ署名条件なら既存 KiriPad の更新として入れられ、Documents のゲームデータを引き継ぎやすい構成です。
 
-詳細：`docs/GITHUB_ACTIONS_NO_MAC.md`
+## サノバウィッチについて
 
-Apple Developer Programの証明書とProvisioning Profileを用意できる場合は、`Build Signed KiriPad iOS` ワークフローで署名済みIPAの生成にも対応しています。
+Phase 1診断では 28 個の DLL が確認されています。Phase 2A の優先度表示は「対応済み」の意味ではありません。実際のランタイムログで、起動時にどのプラグイン/APIが最初に必要になるかを特定するための目印です。
 
-## 1. まず診断器をローカルでテスト
+特に `yuzuex.dll`、D3D描画系、動画系は作品固有/Windows依存の可能性が高いため、Phase 2B以降の互換実装候補です。
 
-```bash
-./scripts/test_scanner.sh
-```
+## ゲームデータについて
 
-成功すると `scanner tests passed` と表示され、`.build-tools/kiripad-inspect` が生成されます。
-PC上のゲームフォルダを診断する例：
+- ゲーム本体を GitHub へアップロードする必要はありません。
+- KiriPad はユーザーが選択したローカルフォルダを読みます。
+- Phase 2A のプローブは XP3 を展開・復号・改変しません。
+- DRM/コピー保護の解除を目的とする機能は含めません。
 
-```bash
-./.build-tools/kiripad-inspect "/path/to/game"
-```
+## KrKr2-Next とライセンス
 
-## 2. iPadアプリのXcodeプロジェクトを生成
+実ランタイム Workflow は `https://github.com/reAAAq/KrKr2-Next` を取得してリンクします。KrKr2-Next は GPL-3.0-or-later で提供されています。
+この Phase 2A ソースも、実ランタイムと組み合わせて配布しやすいよう GPL-3.0-or-later として扱います。自分以外へランタイム入りIPAを配布する場合は、対応するソースとライセンス提供条件を確認してください。
 
-```bash
-./scripts/generate_xcode.sh
-```
+KiriPad のソースZIP自体には KrKr2-Next のバイナリやゲームデータは含めていません。
 
-Xcodeが開いたら：
+## ローカルテスト
 
-1. `KiriPad` target → Signing & Capabilities
-2. Development Teamを自分のApple ID/Teamに設定
-3. 接続したiPadをRun Destinationに選択
-4. Run
-5. 「ゲームフォルダを選択」から、自分が正規に所有するゲームのフォルダを選ぶ
-
-## 3. 吉里吉里SDL2の純粋なiOSビルドも確認
-
-```bash
-./scripts/bootstrap_krkrsdl2_ios.sh
-```
-
-これはKiriPadとは別に、上流の吉里吉里SDL2がそのMac/Xcode/iPadでビルドできるかを確認するための基準試験です。
-上流はiOS向けCMake/Xcode生成を持っていますが、未変更の市販ゲーム実行はサポート対象外と明記しています。
-
-## なぜ先に診断するのか
-
-サノバウィッチが起動しない場合でも、原因は複数あります。
-
-- 標準吉里吉里API不足
-- Windows DLL/TPMプラグイン
-- XP3フィルタや独自アーカイブ処理
-- 動画コーデック
-- フォント
-- ファイル名の大文字小文字
-- DirectX/GDI依存描画
-- ライセンス/DRM
-
-最初から全部を実装すると切り分け不能になるため、Phase 1でゲーム構成を記録し、Phase 2で必要な互換APIだけ追加します。
-
-## 次の完成条件（Phase 2）
-
-1. C/C++のエンジンAPIをKiriPadへリンク
-2. 選択フォルダをエンジンのストレージルートとして渡す
-3. TJS初期化
-4. タイトル画面描画
-5. タッチ → マウスイベント変換
-6. 音声初期化
-
-最初のゴールは **「サノバウィッチのタイトル画面をiPadに出す」** です。
-
-## 参考エンジンを取得
+Linux/macOS上でコアの単体テストのみ実行できます。
 
 ```bash
-./scripts/fetch_reference_engines.sh
+bash ./scripts/test_scanner.sh
 ```
 
-- `KrKr2-Next`: **Phase 2の第一実装候補**。C APIの橋渡しとiOS経路が既にあり、Metal系の作業も進行中
-- `Kirikiroid2`: 市販ゲーム互換の実装参考。過去にiOS版の実績があるが、公開ソース側のiOS構成は古い
-- `krkrsdl2`: iOSネイティブビルドが成立するかを見る基準実装。商用ゲームの無変更実行は上流サポート外
+iOS/Xcode ビルドは macOS が必要ですが、GitHub Actions の macOS runner で実行できます。
 
-各プロジェクトのライセンスを必ず確認してください。本キットはそれらのソースを同梱していません。
+## 現段階の制限
 
-## 重要
-
-このプロジェクトは互換性研究・個人所有ソフトの実行基盤を目的としています。
-コピー保護やDRMを回避するコードはPhase 1には含めていません。
+- KrKr2-Next 自体の iOS 経路も開発中です。
+- サノバウィッチの全 DLL 互換性は未実装です。
+- 動画、D3D互換、作品固有拡張、フォント/音声などで追加作業が必要になる可能性があります。
+- 実ランタイム版は「タイトル画面が必ず出る」ことを保証する版ではなく、次の互換実装に必要な **実起動ログを取る版** です。

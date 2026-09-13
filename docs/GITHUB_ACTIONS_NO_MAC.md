@@ -46,11 +46,10 @@ Actions
 `iPad unsigned IPA` が成功すると、実行結果の **Artifacts** に次が出ます。
 
 ```text
-KiriPad-unsigned-ipa
-KiriPad-unsigned-app
+KiriPad-Phase2A-probe-unsigned-ipa
 ```
 
-`KiriPad-unsigned-ipa` をダウンロードすると、中に `KiriPad-unsigned.ipa` があります。
+`KiriPad-Phase2A-probe-unsigned-ipa` をダウンロードすると、中に `KiriPad-unsigned.ipa` があります。
 
 ## なぜ「unsigned」なのか
 
@@ -111,7 +110,7 @@ APPLE_TEAM_ID
 
 ```text
 Actions
-  → Build Signed KiriPad iOS
+  → Build Signed KiriPad iOS (advanced)
   → Run workflow
 ```
 

@@ -13,6 +13,14 @@ c++ -std=c++17 -Wall -Wextra \
 
 c++ -std=c++17 -Wall -Wextra \
   -I"$ROOT/Core" \
+  "$ROOT/Core/GameRootResolver.cpp" \
+  "$ROOT/Core/StartupProbe.cpp" \
+  "$ROOT/tests/test_phase2a.cpp" \
+  -o "$OUT/test_phase2a"
+"$OUT/test_phase2a"
+
+c++ -std=c++17 -Wall -Wextra \
+  -I"$ROOT/Core" \
   "$ROOT/Core/GameSignatureScanner.cpp" \
   "$ROOT/tools/inspect_game.cpp" \
   -o "$OUT/kiripad-inspect"

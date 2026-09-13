@@ -15,6 +15,6 @@ cmake -S "$ROOT" -B "$BUILD" -G Xcode \
   -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0
 
 echo
-printf 'Generated: %s\n' "$BUILD/KiriPadPhase1.xcodeproj"
+printf 'Generated: %s\n' "$BUILD/KiriPadPhase2A.xcodeproj"
 echo "Open it in Xcode, set your Development Team for the KiriPad target, select your iPad, and Run."
-open "$BUILD/KiriPadPhase1.xcodeproj"
+open "$BUILD/KiriPadPhase2A.xcodeproj"
