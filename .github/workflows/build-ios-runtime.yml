@@ -1,4 +1,4 @@
-name: Build KiriPad Phase 2A.17 Bypass Startup XP3 Filter
+name: Build KiriPad Phase 2A.18 Initialize TJS Diagnostics
 
 on:
   workflow_dispatch:
@@ -523,11 +523,11 @@ jobs:
           else:
               line_start += 1
 
-          marker = "KiriPad Phase 2A.17 - Sanoba Witch selective native XP3 extraction filter."
+          marker = "KiriPad Phase 2A.18 - Sanoba Witch initialize.tjs diagnostics."
           if marker in text:
               raise SystemExit("Native Sanoba filter marker already present unexpectedly")
 
-          native_block = r'''    // KiriPad Phase 2A.17 - Sanoba Witch selective native XP3 extraction filter.
+          native_block = r'''    // KiriPad Phase 2A.18 - Sanoba Witch initialize.tjs diagnostics.
               //
               // Phase 2A.16.1 proved that applying the XOR transform globally
               // still leads to a startup-script SIGSEGV.  Phase 2A.14 proved
@@ -553,10 +553,36 @@ jobs:
                       static bool kiripadStartupLogged = false;
                       if(!kiripadStartupLogged) {
                           TVPAddImportantLog(
-                              TJS_W("(info) KiriPad 2A.17 bypassing XP3 XOR for startup.tjs"));
+                              TJS_W("(info) KiriPad 2A.18 bypassing XP3 XOR for startup.tjs"));
                           kiripadStartupLogged = true;
                       }
                       return;
+                  }
+
+                  const std::string initializeName = "initialize.tjs";
+                  const bool kiripadIsInitialize =
+                      kiripadFileName == initializeName ||
+                      (kiripadFileName.size() >= initializeName.size() &&
+                       kiripadFileName.compare(
+                           kiripadFileName.size() - initializeName.size(),
+                           initializeName.size(),
+                           initializeName) == 0);
+
+                  if(kiripadIsInitialize) {
+                      static bool kiripadInitializeLogged = false;
+                      if(!kiripadInitializeLogged) {
+                          TVPAddImportantLog(
+                              TJS_W("(info) KiriPad 2A.18 initialize.tjs reached XP3 filter"));
+                          if(info->BufferSize > 0 &&
+                             static_cast<tjs_uint8 *>(info->Buffer)[0] == (tjs_uint8)0x14) {
+                              TVPAddImportantLog(
+                                  TJS_W("(info) KiriPad 2A.18 initialize.tjs raw first byte is 0x14"));
+                          } else {
+                              TVPAddImportantLog(
+                                  TJS_W("(info) KiriPad 2A.18 initialize.tjs raw first byte is not 0x14"));
+                          }
+                          kiripadInitializeLogged = true;
+                      }
                   }
 
                   const tjs_uint32 h = info->FileHash;
@@ -572,10 +598,24 @@ jobs:
                   for(tjs_uint i = 0; i < info->BufferSize; ++i)
                       p[i] ^= xorval;
 
+                  if(kiripadIsInitialize) {
+                      static bool kiripadInitializeAfterLogged = false;
+                      if(!kiripadInitializeAfterLogged) {
+                          if(info->BufferSize > 0 && p[0] == (tjs_uint8)0x14) {
+                              TVPAddImportantLog(
+                                  TJS_W("(info) KiriPad 2A.18 initialize.tjs post-XOR first byte is 0x14"));
+                          } else {
+                              TVPAddImportantLog(
+                                  TJS_W("(info) KiriPad 2A.18 initialize.tjs post-XOR first byte is not 0x14"));
+                          }
+                          kiripadInitializeAfterLogged = true;
+                      }
+                  }
+
                   static bool kiripadLogged = false;
                   if(!kiripadLogged) {
                       TVPAddImportantLog(
-                          TJS_W("(info) KiriPad 2A.17 selective native Sanoba XP3 filter active"));
+                          TJS_W("(info) KiriPad 2A.18 selective native Sanoba XP3 filter active"));
                       kiripadLogged = true;
                   }
                   return;
@@ -597,13 +637,16 @@ jobs:
           for token in (
               "0x1DDB6E7A",
               "p[i] ^= xorval;",
-              "KiriPad 2A.17 bypassing XP3 XOR for startup.tjs",
-              "KiriPad 2A.17 selective native Sanoba XP3 filter active",
+              "KiriPad 2A.18 bypassing XP3 XOR for startup.tjs",
+              "KiriPad 2A.18 selective native Sanoba XP3 filter active",
+              "KiriPad 2A.18 initialize.tjs reached XP3 filter",
+              "initialize.tjs raw first byte is 0x14",
+              "initialize.tjs post-XOR first byte is 0x14",
           ):
               if token not in patched:
                   raise SystemExit(f"Native Sanoba filter verification failed: {token}")
 
-          print("Installed Phase 2A.17 selective native Sanoba XP3 filter.")
+          print("Installed Phase 2A.18 initialize.tjs diagnostic filter.")
           print(patched[wrapper2:managed2 + len(managed_line) + 300])
           PY
 
@@ -1232,7 +1275,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A17-runtime-build-logs
+          name: KiriPad-Phase2A18-runtime-build-logs
           path: artifacts/runtime-build-logs
           if-no-files-found: warn
           retention-days: 14
@@ -1241,7 +1284,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A17-runtime-unsigned-ipa
+          name: KiriPad-Phase2A18-runtime-unsigned-ipa
           path: artifacts/KiriPad-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
@@ -1250,7 +1293,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A17-runtime-source-info
+          name: KiriPad-Phase2A18-runtime-source-info
           path: artifacts/runtime-source-info
           if-no-files-found: warn
           retention-days: 14
