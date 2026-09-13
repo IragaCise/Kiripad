@@ -6,21 +6,24 @@ on:
     branches: [ main, master ]
   pull_request:
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 permissions:
   contents: read
 
 jobs:
   scanner-tests:
-    name: Scanner tests
+    name: Phase 2A core tests
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Run scanner tests
+      - name: Run scanner/probe tests
         run: bash ./scripts/test_scanner.sh
 
   ios-unsigned:
-    name: iPad unsigned IPA
+    name: iPad probe IPA (no runtime)
     runs-on: macos-latest
     steps:
       - name: Checkout
@@ -35,20 +38,13 @@ jobs:
       - name: Build unsigned IPA
         env:
           KIRIPAD_BUNDLE_ID: dev.kiripad.phase1
+          KIRIPAD_WITH_ENGINE: "0"
         run: bash ./ci/build_unsigned_ipa.sh
 
       - name: Upload unsigned IPA
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-unsigned-ipa
+          name: KiriPad-Phase2A-probe-unsigned-ipa
           path: artifacts/KiriPad-unsigned.ipa
-          if-no-files-found: error
-          retention-days: 14
-
-      - name: Upload raw app bundle
-        uses: actions/upload-artifact@v4
-        with:
-          name: KiriPad-unsigned-app
-          path: artifacts/KiriPad.app
           if-no-files-found: error
           retention-days: 14

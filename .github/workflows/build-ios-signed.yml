@@ -1,4 +1,4 @@
-name: Build Signed KiriPad iOS
+name: Build Signed KiriPad iOS (advanced)
 
 on:
   workflow_dispatch:
@@ -19,6 +19,9 @@ on:
 
 permissions:
   contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
   ios-signed:
@@ -103,7 +106,7 @@ jobs:
         run: |
           set -euo pipefail
           xcodebuild \
-            -project build-ios-signed/KiriPadPhase1.xcodeproj \
+            -project build-ios-signed/KiriPadPhase2A.xcodeproj \
             -scheme KiriPad \
             -configuration Release \
             -sdk iphoneos \

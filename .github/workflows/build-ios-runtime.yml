@@ -1,0 +1,123 @@
+name: Build KiriPad Phase 2A Runtime
+
+on:
+  workflow_dispatch:
+    inputs:
+      engine_ref:
+        description: "KrKr2-Next git ref (branch/tag/commit)"
+        required: true
+        default: "main"
+        type: string
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+permissions:
+  contents: read
+
+jobs:
+  runtime-ios:
+    name: Experimental runtime unsigned IPA
+    runs-on: macos-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout KiriPad
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter (required by upstream iOS build script)
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Ensure Ninja is available
+        shell: bash
+        run: |
+          if ! command -v ninja >/dev/null 2>&1; then
+            brew install ninja
+          fi
+          flutter --version
+          ninja --version
+
+      - name: Cache vcpkg binary archives
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/vcpkg/archives
+          key: vcpkg-ios-${{ runner.os }}-${{ runner.arch }}-${{ inputs.engine_ref }}
+          restore-keys: |
+            vcpkg-ios-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Fetch KrKr2-Next source
+        shell: bash
+        run: |
+          rm -rf .engine-src
+          mkdir -p .engine-src
+          git clone --filter=blob:none https://github.com/reAAAq/KrKr2-Next.git .engine-src/KrKr2-Next
+          cd .engine-src/KrKr2-Next
+          git checkout "${{ inputs.engine_ref }}"
+          git rev-parse HEAD | tee ../../engine-commit.txt
+          printf 'Source: https://github.com/reAAAq/KrKr2-Next\nRef: %s\nCommit: %s\n' \
+            "${{ inputs.engine_ref }}" "$(git rev-parse HEAD)" > ../../engine-source.txt
+
+      - name: Build upstream iOS engine archives
+        shell: bash
+        run: |
+          set +e
+          cd .engine-src/KrKr2-Next
+          bash ./build.sh ios release --jobs=4
+          UPSTREAM_STATUS=$?
+          set -e
+          cd ../..
+
+          LIBDIR=".engine-src/KrKr2-Next/bridge/flutter_engine_bridge/ios/Libs"
+          PROJECT_LIB="$LIBDIR/libengine_project.a"
+          VENDOR_LIB="$LIBDIR/libengine_vendors.a"
+
+          if [[ ! -f "$PROJECT_LIB" || ! -f "$VENDOR_LIB" ]]; then
+            echo "Upstream build status: $UPSTREAM_STATUS"
+            echo "Required merged engine archives were not produced."
+            find .engine-src/KrKr2-Next -name 'libengine*.a' -print || true
+            exit 1
+          fi
+
+          # The upstream script may fail later in its Flutter app stage even after
+          # the static engine archives we need are already complete. We only need
+          # those archives for KiriPad.
+          echo "Upstream build status: $UPSTREAM_STATUS"
+          ls -lh "$PROJECT_LIB" "$VENDOR_LIB"
+          mkdir -p Vendor/KrKr2Next/Libs
+          cp "$PROJECT_LIB" Vendor/KrKr2Next/Libs/libengine_project.a
+          cp "$VENDOR_LIB" Vendor/KrKr2Next/Libs/libengine_vendors.a
+
+      - name: Build KiriPad with runtime linked
+        shell: bash
+        env:
+          KIRIPAD_BUNDLE_ID: dev.kiripad.phase1
+          KIRIPAD_WITH_ENGINE: "1"
+        run: bash ./ci/build_unsigned_ipa.sh
+
+      - name: Collect build metadata
+        shell: bash
+        run: |
+          mkdir -p artifacts/runtime-source-info
+          cp engine-commit.txt engine-source.txt artifacts/runtime-source-info/
+          if [[ -f .engine-src/KrKr2-Next/LICENSE ]]; then
+            cp .engine-src/KrKr2-Next/LICENSE artifacts/runtime-source-info/KrKr2-Next-LICENSE.txt
+          fi
+
+      - name: Upload runtime unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: KiriPad-Phase2A-runtime-unsigned-ipa
+          path: artifacts/KiriPad-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload exact upstream source metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: KiriPad-Phase2A-runtime-source-info
+          path: artifacts/runtime-source-info
+          if-no-files-found: error
+          retention-days: 14
