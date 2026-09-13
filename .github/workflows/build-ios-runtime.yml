@@ -1,4 +1,4 @@
-name: Build KiriPad Phase 2A.13 Documents Path Recovery
+name: Build KiriPad Phase 2A.14 Frame Diagnostics
 
 on:
   workflow_dispatch:
@@ -201,7 +201,7 @@ jobs:
           text = path.read_text(encoding="utf-8")
 
           old = "if(!_utf8_strcasecmp(actualPrefix.c_str(), dir.c_str())) {"
-          new = "if(!_utf8_strcasecmp_nfc(actualPrefix.c_str(), dir.c_str())) { // KiriPad Phase 2A.13: retain iOS sandbox prefix case/Unicode recovery"
+          new = "if(!_utf8_strcasecmp_nfc(actualPrefix.c_str(), dir.c_str())) { // KiriPad Phase 2A.14: retain iOS sandbox prefix case/Unicode recovery"
 
           count = text.count(old)
           if count != 1:
@@ -272,7 +272,7 @@ jobs:
                           while(*ptr && *ptr == TJS_W('/'))
                               ++ptr;
 
-                          spdlog::info("KiriPad 2A.13 Documents-anchor recovery: base='{}', remaining='{}'",
+                          spdlog::info("KiriPad 2A.14 Documents-anchor recovery: base='{}', remaining='{}'",
                                        realDocuments, tTJSNarrowStringHolder(ptr).Buf);
                           kiripadDocumentsRecovered = true;
                           break;
@@ -335,8 +335,8 @@ jobs:
           new = '''    std::string projBaseStr = projBaseName.AsNarrowStdString();
               for(auto &c : projBaseStr) c = (char)tolower((unsigned char)c);
               if(projBaseStr.size() >= 4 && projBaseStr.substr(projBaseStr.size() - 4) == ".xp3")
-                  projBaseStr.resize(projBaseStr.size() - 4); // KiriPad Phase 2A.13: compare basename to basename
-              spdlog::info("KiriPad 2A.13 AutoMount project basename={}", projBaseStr);
+                  projBaseStr.resize(projBaseStr.size() - 4); // KiriPad Phase 2A.14: compare basename to basename
+              spdlog::info("KiriPad 2A.14 AutoMount project basename={}", projBaseStr);
 
               std::vector<std::string> xp3Names;
           '''
@@ -370,7 +370,7 @@ jobs:
               raise SystemExit(1)
           
           patch = """#if defined(__APPLE__) && TARGET_OS_IPHONE
-              // KiriPad Phase 2A.13: TVPProjectDir is normalized to lowercase for the
+              // KiriPad Phase 2A.14: TVPProjectDir is normalized to lowercase for the
               // storage namespace, but the iOS sandbox path is case-sensitive.
               // AutoMountXP3 asks for the parent of the game root (Documents/), which is
               // shorter than _getHomeDir()[0] (Documents/<game>/), so the ordinary
@@ -543,14 +543,14 @@ jobs:
           # static archive that KiriPad will link.
           ENGINE_STRINGS="$RUNNER_TEMP/kiripad-engine-project-strings.txt"
           strings Vendor/KrKr2Next/Libs/libengine_project.a > "$ENGINE_STRINGS"
-          if ! grep -Fq "KiriPad 2A.13 Documents-anchor recovery" "$ENGINE_STRINGS"; then
-            echo "ERROR: merged engine archive does not contain the Phase 2A.13 Documents-anchor marker"
-            grep -F "KiriPad 2A.13" "$ENGINE_STRINGS" | head -n 80 || true
+          if ! grep -Fq "KiriPad 2A.14 Documents-anchor recovery" "$ENGINE_STRINGS"; then
+            echo "ERROR: merged engine archive does not contain the Phase 2A.14 Documents-anchor marker"
+            grep -F "KiriPad 2A.14" "$ENGINE_STRINGS" | head -n 80 || true
             exit 1
           fi
-          echo "Phase 2A.13 engine archive marker confirmed."
+          echo "Phase 2A.14 engine archive marker confirmed."
 
-      - name: Force-install Phase 2A.13 Documents-path runtime host
+      - name: Force-install Phase 2A.14 Documents-path runtime host
         shell: bash
         run: |
           set -euo pipefail
@@ -574,6 +574,9 @@ jobs:
               CADisplayLink *_displayLink;
               uint64_t _lastFrameSerial;
               BOOL _startupSuccessLogged;
+              uint64_t _tickCount;
+              uint64_t _framesDelivered;
+              uint32_t _frameDiagBudget;
           #endif
               std::atomic_bool _runningAtomic;
           }
@@ -606,6 +609,9 @@ jobs:
                   _displayLink = nil;
                   _lastFrameSerial = 0;
                   _startupSuccessLogged = NO;
+                  _tickCount = 0;
+                  _framesDelivered = 0;
+                  _frameDiagBudget = 12;
           #endif
               }
               return self;
@@ -668,22 +674,55 @@ jobs:
               if (!_engine) return;
               engine_frame_desc_t desc{};
               desc.struct_size = sizeof(desc);
-              if (engine_get_frame_desc(_engine, &desc) != ENGINE_RESULT_OK) return;
-              if (desc.width == 0 || desc.height == 0 || desc.stride_bytes == 0) return;
-              if (desc.pixel_format != ENGINE_PIXEL_FORMAT_RGBA8888) return;
+              const auto descResult = engine_get_frame_desc(_engine, &desc);
+              if (descResult != ENGINE_RESULT_OK) {
+                  if (_frameDiagBudget > 0) {
+                      --_frameDiagBudget;
+                      [self notifyLog:[NSString stringWithFormat:@"[Phase2A.14] frame_desc result=%d error=%@\n", (int)descResult, [self lastEngineError]]];
+                  }
+                  return;
+              }
+              if (desc.width == 0 || desc.height == 0 || desc.stride_bytes == 0) {
+                  if (_frameDiagBudget > 0) {
+                      --_frameDiagBudget;
+                      [self notifyLog:[NSString stringWithFormat:@"[Phase2A.14] frame_desc empty width=%u height=%u stride=%u format=%u serial=%llu\n", desc.width, desc.height, desc.stride_bytes, desc.pixel_format, (unsigned long long)desc.frame_serial]];
+                  }
+                  return;
+              }
+              if (desc.pixel_format != ENGINE_PIXEL_FORMAT_RGBA8888) {
+                  if (_frameDiagBudget > 0) {
+                      --_frameDiagBudget;
+                      [self notifyLog:[NSString stringWithFormat:@"[Phase2A.14] unsupported frame format=%u size=%ux%u stride=%u serial=%llu\n", desc.pixel_format, desc.width, desc.height, desc.stride_bytes, (unsigned long long)desc.frame_serial]];
+                  }
+                  return;
+              }
               if (desc.frame_serial != 0 && desc.frame_serial == _lastFrameSerial) return;
-          
+
               const size_t bytes = static_cast<size_t>(desc.stride_bytes) * desc.height;
-              if (bytes == 0 || bytes > 256ull * 1024ull * 1024ull) return;
+              if (bytes == 0 || bytes > 256ull * 1024ull * 1024ull) {
+                  if (_frameDiagBudget > 0) {
+                      --_frameDiagBudget;
+                      [self notifyLog:[NSString stringWithFormat:@"[Phase2A.14] invalid frame byte count=%llu\n", (unsigned long long)bytes]];
+                  }
+                  return;
+              }
               std::vector<uint8_t> storage(bytes);
-              if (engine_read_frame_rgba(_engine, storage.data(), storage.size()) != ENGINE_RESULT_OK) return;
+              const auto readResult = engine_read_frame_rgba(_engine, storage.data(), storage.size());
+              if (readResult != ENGINE_RESULT_OK) {
+                  if (_frameDiagBudget > 0) {
+                      --_frameDiagBudget;
+                      [self notifyLog:[NSString stringWithFormat:@"[Phase2A.14] frame_read result=%d serial=%llu error=%@\n", (int)readResult, (unsigned long long)desc.frame_serial, [self lastEngineError]]];
+                  }
+                  return;
+              }
               _lastFrameSerial = desc.frame_serial;
-          
+              ++_framesDelivered;
+
               const uint32_t width = desc.width;
               const uint32_t height = desc.height;
               const uint32_t stride = desc.stride_bytes;
               NSData *frameData = [NSData dataWithBytes:storage.data() length:storage.size()];
-          
+
               CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
               CGDataProviderRef provider = CGDataProviderCreateWithCFData((__bridge CFDataRef)frameData);
               CGBitmapInfo bitmapInfo = kCGBitmapByteOrder32Big | kCGImageAlphaLast;
@@ -693,15 +732,19 @@ jobs:
               if (cg) CGImageRelease(cg);
               CGDataProviderRelease(provider);
               CGColorSpaceRelease(cs);
-          
+
+              if (_framesDelivered <= 5 || (_framesDelivered % 120) == 0) {
+                  [self notifyLog:[NSString stringWithFormat:@"[Phase2A.14] frame delivered #%llu serial=%llu size=%ux%u stride=%u image=%@\n", (unsigned long long)_framesDelivered, (unsigned long long)desc.frame_serial, width, height, stride, image ? @"YES" : @"NO"]];
+              }
+
               if (image) {
                   id<EngineRuntimeHostDelegate> delegate = self.delegate;
                   if (delegate) [delegate engineRuntimeHost:self didProduceImage:image pixelSize:CGSizeMake(width, height)];
               }
           }
-          
+
           - (void)stopOnOwnerThread {
-              NSAssert(NSThread.isMainThread, @"KrKr2 engine owner thread must be the main thread in Phase 2A.13");
+              NSAssert(NSThread.isMainThread, @"KrKr2 engine owner thread must be the main thread in Phase 2A.14");
               if (_displayLink) {
                   [_displayLink invalidate];
                   _displayLink = nil;
@@ -713,6 +756,9 @@ jobs:
               }
               _lastFrameSerial = 0;
               _startupSuccessLogged = NO;
+              _tickCount = 0;
+              _framesDelivered = 0;
+              _frameDiagBudget = 12;
               [self notifyRunning:NO];
           }
           
@@ -720,6 +766,7 @@ jobs:
               (void)link;
               NSAssert(NSThread.isMainThread, @"KrKr2 tick moved off engine owner thread");
               if (!_engine || !_runningAtomic.load()) return;
+              ++_tickCount;
           
               const auto tickResult = engine_tick(_engine, 16);
               [self drainStartupLogs];
@@ -727,13 +774,13 @@ jobs:
               uint32_t startupState = ENGINE_STARTUP_STATE_IDLE;
               const auto stateResult = engine_get_startup_state(_engine, &startupState);
               if (stateResult != ENGINE_RESULT_OK) {
-                  [self notifyLog:[NSString stringWithFormat:@"\n[Phase2A.13] engine_get_startup_state error=%d: %@\n", (int)stateResult, [self lastEngineError]]];
+                  [self notifyLog:[NSString stringWithFormat:@"\n[Phase2A.14] engine_get_startup_state error=%d: %@\n", (int)stateResult, [self lastEngineError]]];
                   [self stopOnOwnerThread];
                   return;
               }
           
               if (startupState == ENGINE_STARTUP_STATE_FAILED) {
-                  [self notifyLog:[NSString stringWithFormat:@"\n[Phase2A.13] startup FAILED (state=%u, tick=%d): %@\n", startupState, (int)tickResult, [self lastEngineError]]];
+                  [self notifyLog:[NSString stringWithFormat:@"\n[Phase2A.14] startup FAILED (state=%u, tick=%d): %@\n", startupState, (int)tickResult, [self lastEngineError]]];
                   [self captureFrameIfAvailable];
                   [self stopOnOwnerThread];
                   return;
@@ -741,11 +788,14 @@ jobs:
           
               if (startupState == ENGINE_STARTUP_STATE_SUCCEEDED && !_startupSuccessLogged) {
                   _startupSuccessLogged = YES;
-                  [self notifyLog:@"\n[Phase2A.13] startup SUCCEEDED — entering frame loop\n"];
+                  [self notifyLog:@"\n[Phase2A.14] startup SUCCEEDED — entering frame loop\n"];
+              }
+              if (_startupSuccessLogged && (_tickCount <= 5 || (_tickCount % 120) == 0)) {
+                  [self notifyLog:[NSString stringWithFormat:@"[Phase2A.14] heartbeat tick=%llu tickResult=%d startupState=%u frames=%llu lastSerial=%llu\n", (unsigned long long)_tickCount, (int)tickResult, startupState, (unsigned long long)_framesDelivered, (unsigned long long)_lastFrameSerial]];
               }
           
               if (tickResult != ENGINE_RESULT_OK && tickResult != ENGINE_RESULT_INVALID_STATE) {
-                  [self notifyLog:[NSString stringWithFormat:@"\n[Phase2A.13] engine_tick error=%d: %@\n", (int)tickResult, [self lastEngineError]]];
+                  [self notifyLog:[NSString stringWithFormat:@"\n[Phase2A.14] engine_tick error=%d: %@\n", (int)tickResult, [self lastEngineError]]];
               }
               [self captureFrameIfAvailable];
           }
@@ -761,10 +811,10 @@ jobs:
           #else
               // KrKr2-Next engine_api binds an engine handle to the exact OS thread that
               // called engine_create().  A serial GCD queue is NOT enough: GCD may run
-              // successive blocks on different worker threads.  Phase 2A.13 therefore
+              // successive blocks on different worker threads.  Phase 2A.14 therefore
               // owns the engine on UIKit's main thread and drives it with CADisplayLink.
               if (!NSThread.isMainThread) {
-                  if (error) *error = [NSError errorWithDomain:KiriPadRuntimeErrorDomain code:4 userInfo:@{NSLocalizedDescriptionKey:@"KiriPad Phase 2A.13 はメインスレッドから起動する必要があります。"}];
+                  if (error) *error = [NSError errorWithDomain:KiriPadRuntimeErrorDomain code:4 userInfo:@{NSLocalizedDescriptionKey:@"KiriPad Phase 2A.14 はメインスレッドから起動する必要があります。"}];
                   return NO;
               }
               if (!gameRoot.isFileURL) {
@@ -800,7 +850,7 @@ jobs:
                       }
                   }
                   if (!engineEntryPath && listError) {
-                      [self notifyLog:[NSString stringWithFormat:@"[Phase2A.13] data.xp3 directory scan warning: %@\n", listError.localizedDescription]];
+                      [self notifyLog:[NSString stringWithFormat:@"[Phase2A.14] data.xp3 directory scan warning: %@\n", listError.localizedDescription]];
                   }
               }
               if (!engineEntryPath && !rootIsDirectory && [[rootPath.pathExtension lowercaseString] isEqualToString:@"xp3"]) {
@@ -820,13 +870,13 @@ jobs:
               [fm createDirectoryAtPath:cachePath withIntermediateDirectories:YES attributes:nil error:nil];
           
               [self notifyRunning:YES];
-              [self notifyLog:[NSString stringWithFormat:@"\n[Phase2A.13] backend: %@\n[Phase2A.13] owner thread: main=%@\n[Phase2A.13] selected root: %@\n[Phase2A.13] engine entry: %@\n", [EngineRuntimeHost backendDescription], NSThread.isMainThread ? @"YES" : @"NO", rootPath, engineEntryPath]];
+              [self notifyLog:[NSString stringWithFormat:@"\n[Phase2A.14] backend: %@\n[Phase2A.14] owner thread: main=%@\n[Phase2A.14] selected root: %@\n[Phase2A.14] engine entry: %@\n", [EngineRuntimeHost backendDescription], NSThread.isMainThread ? @"YES" : @"NO", rootPath, engineEntryPath]];
           
               uint32_t runtimeVersion = 0;
               auto versionResult = engine_get_runtime_api_version(&runtimeVersion);
               if (versionResult != ENGINE_RESULT_OK || (runtimeVersion >> 24u) != (ENGINE_API_VERSION >> 24u)) {
                   if (error) *error = [NSError errorWithDomain:KiriPadRuntimeErrorDomain code:5 userInfo:@{NSLocalizedDescriptionKey:@"engine ABI mismatch"}];
-                  [self notifyLog:[NSString stringWithFormat:@"[Phase2A.13] engine ABI mismatch: runtime=0x%08x expected=0x%08x\n", runtimeVersion, ENGINE_API_VERSION]];
+                  [self notifyLog:[NSString stringWithFormat:@"[Phase2A.14] engine ABI mismatch: runtime=0x%08x expected=0x%08x\n", runtimeVersion, ENGINE_API_VERSION]];
                   [self stopOnOwnerThread];
                   return NO;
               }
@@ -839,27 +889,30 @@ jobs:
               auto createResult = engine_create(&desc, &_engine);
               if (createResult != ENGINE_RESULT_OK || !_engine) {
                   if (error) *error = [NSError errorWithDomain:KiriPadRuntimeErrorDomain code:6 userInfo:@{NSLocalizedDescriptionKey:@"engine_create failed"}];
-                  [self notifyLog:[NSString stringWithFormat:@"[Phase2A.13] engine_create failed: %d\n", (int)createResult]];
+                  [self notifyLog:[NSString stringWithFormat:@"[Phase2A.14] engine_create failed: %d\n", (int)createResult]];
                   [self stopOnOwnerThread];
                   return NO;
               }
           
               auto surfaceResult = engine_set_surface_size(_engine, 1280, 720);
               if (surfaceResult != ENGINE_RESULT_OK) {
-                  [self notifyLog:[NSString stringWithFormat:@"[Phase2A.13] engine_set_surface_size warning: %d / %@\n", (int)surfaceResult, [self lastEngineError]]];
+                  [self notifyLog:[NSString stringWithFormat:@"[Phase2A.14] engine_set_surface_size warning: %d / %@\n", (int)surfaceResult, [self lastEngineError]]];
               }
           
               auto openResult = engine_open_game_async(_engine, engineEntryPath.UTF8String, nullptr);
               if (openResult != ENGINE_RESULT_OK) {
                   NSString *detail = [self lastEngineError];
                   if (error) *error = [NSError errorWithDomain:KiriPadRuntimeErrorDomain code:7 userInfo:@{NSLocalizedDescriptionKey:detail ?: @"engine_open_game_async failed"}];
-                  [self notifyLog:[NSString stringWithFormat:@"[Phase2A.13] engine_open_game_async failed: %d / %@\n", (int)openResult, detail]];
+                  [self notifyLog:[NSString stringWithFormat:@"[Phase2A.14] engine_open_game_async failed: %d / %@\n", (int)openResult, detail]];
                   [self stopOnOwnerThread];
                   return NO;
               }
           
               _lastFrameSerial = 0;
               _startupSuccessLogged = NO;
+              _tickCount = 0;
+              _framesDelivered = 0;
+              _frameDiagBudget = 12;
               _displayLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(displayLinkFired:)];
               if (@available(iOS 15.0, *)) {
                   _displayLink.preferredFrameRateRange = CAFrameRateRangeMake(30.0, 60.0, 60.0);
@@ -904,7 +957,7 @@ jobs:
               event.button = 0;
               const auto inputResult = engine_send_input(_engine, &event);
               if (inputResult != ENGINE_RESULT_OK && inputResult != ENGINE_RESULT_INVALID_STATE) {
-                  [self notifyLog:[NSString stringWithFormat:@"\n[Phase2A.13] engine_send_input error=%d: %@\n", (int)inputResult, [self lastEngineError]]];
+                  [self notifyLog:[NSString stringWithFormat:@"\n[Phase2A.14] engine_send_input error=%d: %@\n", (int)inputResult, [self lastEngineError]]];
               }
           #else
               (void)type; (void)x; (void)y; (void)pointerID;
@@ -922,8 +975,8 @@ jobs:
           @end
           OBJC
           echo "===== KiriPad runtime host verification ====="
-          grep -nF "[Phase2A.13] owner thread: main=" App/EngineRuntimeHost.mm
-          grep -nF "[Phase2A.13] engine entry:" App/EngineRuntimeHost.mm
+          grep -nF "[Phase2A.14] owner thread: main=" App/EngineRuntimeHost.mm
+          grep -nF "[Phase2A.14] engine entry:" App/EngineRuntimeHost.mm
           grep -nF "engine_open_game_async(_engine, engineEntryPath.UTF8String" App/EngineRuntimeHost.mm
           if grep -qF "dispatch_queue_create(\"dev.kiripad.engine\"" App/EngineRuntimeHost.mm; then
             echo "ERROR: legacy serial-GCD engine owner code is still present"
@@ -953,18 +1006,18 @@ jobs:
           # a successful marker match look like a failed pipeline.
           STRINGS_DUMP="$RUNNER_TEMP/kiripad-runtime-strings.txt"
           strings "$APP_BIN" > "$STRINGS_DUMP"
-          if ! grep -Fq "[Phase2A.13] owner thread: main=" "$STRINGS_DUMP" || ! grep -Fq "[Phase2A.13] engine entry:" "$STRINGS_DUMP"; then
-            echo "ERROR: built IPA does not contain the Phase 2A.13 runtime-host markers"
+          if ! grep -Fq "[Phase2A.14] owner thread: main=" "$STRINGS_DUMP" || ! grep -Fq "[Phase2A.14] engine entry:" "$STRINGS_DUMP"; then
+            echo "ERROR: built IPA does not contain the Phase 2A.14 runtime-host markers"
             echo "Nearby Phase2A markers found in executable:"
             grep -F "Phase2A" "$STRINGS_DUMP" | head -n 60 || true
             exit 1
           fi
-          if ! grep -Fq "KiriPad 2A.13 Documents-anchor recovery" "$STRINGS_DUMP"; then
+          if ! grep -Fq "KiriPad 2A.14 Documents-anchor recovery" "$STRINGS_DUMP"; then
             echo "ERROR: built IPA contains the host but not the patched StorageImpl engine marker"
-            grep -F "KiriPad 2A.13" "$STRINGS_DUMP" | head -n 80 || true
+            grep -F "KiriPad 2A.14" "$STRINGS_DUMP" | head -n 80 || true
             exit 1
           fi
-          echo "Phase 2A.13 host + patched-engine markers confirmed in built executable."
+          echo "Phase 2A.14 host + patched-engine markers confirmed in built executable."
 
       - name: Collect source metadata
         if: always()
@@ -980,7 +1033,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A13-runtime-build-logs
+          name: KiriPad-Phase2A14-runtime-build-logs
           path: artifacts/runtime-build-logs
           if-no-files-found: warn
           retention-days: 14
@@ -989,7 +1042,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A13-runtime-unsigned-ipa
+          name: KiriPad-Phase2A14-runtime-unsigned-ipa
           path: artifacts/KiriPad-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
@@ -998,7 +1051,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A13-runtime-source-info
+          name: KiriPad-Phase2A14-runtime-source-info
           path: artifacts/runtime-source-info
           if-no-files-found: warn
           retention-days: 14
