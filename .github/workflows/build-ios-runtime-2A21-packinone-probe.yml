@@ -1,0 +1,185 @@
+name: KiriPad Phase 2A.21 PackinOne Source Probe
+
+on:
+  workflow_dispatch:
+    inputs:
+      engine_ref:
+        description: "KrKr2-Next git ref (branch/tag/commit)"
+        required: true
+        default: "1abd1ed4e8aec7abd5d2524c3a9ad7886880602f"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: Inspect plugin loader and TJS missing-member paths
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout KiriPad
+        uses: actions/checkout@v4
+
+      - name: Fetch pinned KrKr2-Next source
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .engine-src
+          mkdir -p .engine-src
+          git clone --filter=blob:none https://github.com/reAAAq/KrKr2-Next.git .engine-src/KrKr2-Next
+          cd .engine-src/KrKr2-Next
+          git checkout "${{ inputs.engine_ref }}"
+          git rev-parse HEAD | tee ../../engine-commit.txt
+
+      - name: Probe PackinOne loader and member lookup source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd .engine-src/KrKr2-Next
+
+          OUT="$GITHUB_WORKSPACE/packinone-source-probe.txt"
+          : > "$OUT"
+
+          {
+            echo "KiriPad Phase 2A.21 PackinOne Source Probe"
+            echo "Commit: $(git rev-parse HEAD)"
+            echo
+            echo "=== Repository paths matching plugin loader terms ==="
+          } >> "$OUT"
+
+          grep -RIn \
+            --exclude-dir=.git \
+            -E 'module not found in internal plugin map|ncbAutoRegister::LoadModule|class[[:space:]]+ncbAutoRegister|LoadModule[[:space:]]*\(' \
+            cpp bridge 2>/dev/null | tee -a "$OUT" || true
+
+          echo >> "$OUT"
+          echo "=== Exact warning context (±140 lines) ===" >> "$OUT"
+
+          python3 - <<'PY' | tee -a "$OUT"
+          from pathlib import Path
+
+          roots = [Path("cpp"), Path("bridge")]
+          needle = "module not found in internal plugin map"
+          hits = []
+
+          for root in roots:
+              if not root.exists():
+                  continue
+              for p in root.rglob("*"):
+                  if not p.is_file():
+                      continue
+                  try:
+                      text = p.read_text(encoding="utf-8")
+                  except Exception:
+                      continue
+                  if needle in text:
+                      hits.append((p, text))
+
+          if not hits:
+              print("WARNING STRING NOT FOUND")
+          else:
+              for p, text in hits:
+                  lines = text.splitlines()
+                  for i, line in enumerate(lines):
+                      if needle in line:
+                          lo = max(0, i - 140)
+                          hi = min(len(lines), i + 141)
+                          print(f"\n----- {p}:{i+1} -----")
+                          for n in range(lo, hi):
+                              print(f"{n+1:5d}: {lines[n]}")
+                          print("----- end context -----")
+          PY
+
+          {
+            echo
+            echo "=== Existing internal plugin module names / registration macros ==="
+          } >> "$OUT"
+
+          grep -RIn \
+            --exclude-dir=.git \
+            -E 'NCB_MODULE_NAME|PRE_REGIST|POST_REGIST|Register.*Plugin|Loading Plugin|motionplayer\.dll|win32dialog\.dll|psbfile\.dll' \
+            cpp 2>/dev/null | head -n 1200 | tee -a "$OUT" || true
+
+          {
+            echo
+            echo "=== CMake plugin source/target context ==="
+          } >> "$OUT"
+
+          grep -RIn \
+            --exclude-dir=.git \
+            -E 'win32dialog|motionplayer|psbfile|cpp/plugins|add_library|target_sources' \
+            cpp/plugins CMakeLists.txt cpp 2>/dev/null | head -n 1200 | tee -a "$OUT" || true
+
+          {
+            echo
+            echo "=== TJS missing-member / lookup paths ==="
+          } >> "$OUT"
+
+          grep -RIn \
+            --exclude-dir=.git \
+            -E 'TJS_E_MEMBERNOTFOUND|MEMBERNOTFOUND|Member not found|member not found|TJS_MEMBERMUSTEXIST|PropGet[[:space:]]*\(|FuncCall[[:space:]]*\(' \
+            cpp/core/tjs2 cpp/core/base 2>/dev/null | head -n 1800 | tee -a "$OUT" || true
+
+          echo >> "$OUT"
+          echo "=== Selected missing-member contexts (±45 lines) ===" >> "$OUT"
+
+          python3 - <<'PY' | tee -a "$OUT"
+          from pathlib import Path
+          import re
+
+          patterns = [
+              re.compile(r"TJS_E_MEMBERNOTFOUND"),
+              re.compile(r"MEMBERNOTFOUND"),
+              re.compile(r"Member not found", re.I),
+              re.compile(r"TJS_MEMBERMUSTEXIST"),
+          ]
+
+          shown = 0
+          for root in [Path("cpp/core/tjs2"), Path("cpp/core/base")]:
+              if not root.exists():
+                  continue
+              for p in root.rglob("*"):
+                  if not p.is_file() or p.suffix not in {".cpp", ".cc", ".cxx", ".h", ".hpp"}:
+                      continue
+                  try:
+                      lines = p.read_text(encoding="utf-8").splitlines()
+                  except Exception:
+                      continue
+                  for i, line in enumerate(lines):
+                      if not any(rx.search(line) for rx in patterns):
+                          continue
+                      lo = max(0, i - 45)
+                      hi = min(len(lines), i + 46)
+                      print(f"\n----- {p}:{i+1} -----")
+                      for n in range(lo, hi):
+                          print(f"{n+1:5d}: {lines[n]}")
+                      print("----- end context -----")
+                      shown += 1
+                      if shown >= 20:
+                          raise SystemExit(0)
+          if shown == 0:
+              print("NO MISSING-MEMBER CONTEXT FOUND")
+          PY
+
+          {
+            echo
+            echo "=== Probe complete ==="
+            echo "No source files were modified and no engine build was performed."
+          } >> "$OUT"
+
+          echo "Probe written to: $OUT"
+          echo
+          echo "===== key tail ====="
+          tail -n 220 "$OUT"
+
+      - name: Upload PackinOne source probe
+        uses: actions/upload-artifact@v4
+        with:
+          name: KiriPad-Phase2A21-PackinOne-source-probe
+          path: |
+            packinone-source-probe.txt
+            engine-commit.txt
+          if-no-files-found: error
+          retention-days: 14
