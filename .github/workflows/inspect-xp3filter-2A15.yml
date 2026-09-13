@@ -1,0 +1,101 @@
+name: Inspect KrKr2 XP3 Filter / Octet XOR
+
+on:
+  workflow_dispatch:
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout KiriPad
+        uses: actions/checkout@v4
+
+      - name: Fetch pinned KrKr2-Next source
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .engine-src/KrKr2-Next
+          mkdir -p .engine-src
+          git init .engine-src/KrKr2-Next
+          git -C .engine-src/KrKr2-Next remote add origin https://github.com/reAAAq/KrKr2-Next.git
+          git -C .engine-src/KrKr2-Next fetch --depth=1 origin 1abd1ed4e8aec7abd5d2524c3a9ad7886880602f
+          git -C .engine-src/KrKr2-Next checkout --detach FETCH_HEAD
+          git -C .engine-src/KrKr2-Next rev-parse HEAD
+
+      - name: Extract relevant source context
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          root = Path(".engine-src/KrKr2-Next")
+          pats = [
+              "setXP3ArchiveExtractionFilter",
+              "XP3ArchiveExtractionFilter",
+              "ArchiveExtractionFilter",
+              "tTJSVariantOctet",
+              "VariantOctet",
+              "Octet",
+              'TJS_W("xor")',
+              '"xor"',
+              " xor(",
+              "Xor",
+          ]
+          exts = {".cpp",".cc",".cxx",".c",".h",".hpp",".hh",".mm",".m",".tjs"}
+
+          hits = []
+          for p in root.rglob("*"):
+              if not p.is_file() or p.suffix.lower() not in exts:
+                  continue
+              try:
+                  lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+              except Exception:
+                  continue
+              matched = []
+              for i, line in enumerate(lines):
+                  if any(q in line for q in pats):
+                      matched.append(i)
+              if not matched:
+                  continue
+              # merge +/- 30 line windows
+              spans = []
+              for i in matched:
+                  a, b = max(0, i-30), min(len(lines), i+31)
+                  if spans and a <= spans[-1][1] + 2:
+                      spans[-1] = (spans[-1][0], max(spans[-1][1], b))
+                  else:
+                      spans.append((a,b))
+              for a,b in spans:
+                  hits.append((str(p.relative_to(root)), a, b, lines[a:b]))
+
+          with open("xp3filter-source-inspect.txt", "w", encoding="utf-8") as f:
+              f.write("KrKr2-Next commit: ")
+              import subprocess
+              f.write(subprocess.check_output(
+                  ["git","-C",str(root),"rev-parse","HEAD"], text=True).strip()+"\n\n")
+              if not hits:
+                  f.write("No matches found.\n")
+              for path,a,b,chunk in hits:
+                  f.write("="*80+"\n")
+                  f.write(f"{path}  lines {a+1}-{b}\n")
+                  f.write("="*80+"\n")
+                  for n, line in enumerate(chunk, start=a+1):
+                      f.write(f"{n:6d}: {line}\n")
+                  f.write("\n")
+          PY
+
+          echo "===== quick grep =====" > xp3filter-quick-grep.txt
+          grep -RniE \
+            'setXP3ArchiveExtractionFilter|XP3ArchiveExtractionFilter|ArchiveExtractionFilter|VariantOctet|TJS_W\("xor"\)|"xor"|[[:space:]]xor\(' \
+            .engine-src/KrKr2-Next/cpp \
+            >> xp3filter-quick-grep.txt || true
+
+      - name: Upload inspection artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: KiriPad-Phase2A15-xp3filter-source-inspect
+          path: |
+            xp3filter-source-inspect.txt
+            xp3filter-quick-grep.txt
+          if-no-files-found: error
