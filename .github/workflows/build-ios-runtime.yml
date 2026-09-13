@@ -1,4 +1,4 @@
-name: Build KiriPad Phase 2A Runtime
+name: Build KiriPad Phase 2A.3 Runtime
 
 on:
   workflow_dispatch:
@@ -51,16 +51,28 @@ jobs:
           # gettext is keg-only on macOS/Homebrew and GNU libtool uses a gnubin
           # directory for unprefixed tool names. vcpkg's autoreconf subprocesses
           # need both locations explicitly.
+          # Keep Apple's /usr/bin/libtool visible. KrKr2-Next later uses
+          # `libtool -static`, which is the Apple tool. We only expose GNU
+          # libtoolize through a tiny shim for autoreconf/vcpkg.
+          TOOL_SHIMS="$RUNNER_TEMP/kiripad-tools"
+          mkdir -p "$TOOL_SHIMS"
+          if [[ -x "$LIBTOOL_PREFIX/bin/glibtoolize" ]]; then
+            ln -sf "$LIBTOOL_PREFIX/bin/glibtoolize" "$TOOL_SHIMS/libtoolize"
+          elif [[ -x "$LIBTOOL_PREFIX/libexec/gnubin/libtoolize" ]]; then
+            ln -sf "$LIBTOOL_PREFIX/libexec/gnubin/libtoolize" "$TOOL_SHIMS/libtoolize"
+          fi
+
           printf '%s\n' \
+            "$TOOL_SHIMS" \
             "$GETTEXT_PREFIX/bin" \
-            "$LIBTOOL_PREFIX/libexec/gnubin" \
             "$BREW_PREFIX/bin" >> "$GITHUB_PATH"
 
           ACLOCAL_COMBINED="$AUTOCONF_ARCHIVE_PREFIX/share/aclocal:$GETTEXT_PREFIX/share/aclocal:$LIBTOOL_PREFIX/share/aclocal:$BREW_PREFIX/share/aclocal"
           echo "ACLOCAL_PATH=$ACLOCAL_COMBINED" >> "$GITHUB_ENV"
+          echo "KIRIPAD_TOOL_SHIMS=$TOOL_SHIMS" >> "$GITHUB_ENV"
 
           # Make the tools visible in this step as well as all following steps.
-          export PATH="$GETTEXT_PREFIX/bin:$LIBTOOL_PREFIX/libexec/gnubin:$BREW_PREFIX/bin:$PATH"
+          export PATH="$TOOL_SHIMS:$GETTEXT_PREFIX/bin:$BREW_PREFIX/bin:$PATH"
           export ACLOCAL_PATH="$ACLOCAL_COMBINED${ACLOCAL_PATH:+:$ACLOCAL_PATH}"
           hash -r
 
@@ -110,7 +122,16 @@ jobs:
           GETTEXT_PREFIX="$(brew --prefix gettext)"
           LIBTOOL_PREFIX="$(brew --prefix libtool)"
           AUTOCONF_ARCHIVE_PREFIX="$(brew --prefix autoconf-archive)"
-          export PATH="$GETTEXT_PREFIX/bin:$LIBTOOL_PREFIX/libexec/gnubin:$BREW_PREFIX/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+          TOOL_SHIMS="${KIRIPAD_TOOL_SHIMS:-$RUNNER_TEMP/kiripad-tools}"
+          mkdir -p "$TOOL_SHIMS"
+          if [[ ! -e "$TOOL_SHIMS/libtoolize" ]]; then
+            if [[ -x "$LIBTOOL_PREFIX/bin/glibtoolize" ]]; then
+              ln -sf "$LIBTOOL_PREFIX/bin/glibtoolize" "$TOOL_SHIMS/libtoolize"
+            elif [[ -x "$LIBTOOL_PREFIX/libexec/gnubin/libtoolize" ]]; then
+              ln -sf "$LIBTOOL_PREFIX/libexec/gnubin/libtoolize" "$TOOL_SHIMS/libtoolize"
+            fi
+          fi
+          export PATH="$TOOL_SHIMS:$GETTEXT_PREFIX/bin:$BREW_PREFIX/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
           export ACLOCAL_PATH="$AUTOCONF_ARCHIVE_PREFIX/share/aclocal:$GETTEXT_PREFIX/share/aclocal:$LIBTOOL_PREFIX/share/aclocal:$BREW_PREFIX/share/aclocal${ACLOCAL_PATH:+:$ACLOCAL_PATH}"
           hash -r
 
@@ -143,20 +164,13 @@ jobs:
 
           cd .engine-src/KrKr2-Next
 
-          # Configure explicitly once and pin CMAKE_MAKE_PROGRAM to the Ninja
-          # executable that passed the prerequisite check. This avoids the
-          # misleading secondary "CMAKE_MAKE_PROGRAM is not set" failure after
-          # a vcpkg configure error.
-          NINJA_BIN="$(command -v ninja)"
-          set +e
-          cmake --preset "iOS Release Config" -DCMAKE_MAKE_PROGRAM="$NINJA_BIN"
-          CONFIGURE_STATUS=$?
-          set -e
-          if [[ $CONFIGURE_STATUS -ne 0 ]]; then
-            dump_vcpkg_failure_logs
-            echo "Explicit iOS CMake configure failed with status: $CONFIGURE_STATUS"
-            exit "$CONFIGURE_STATUS"
-          fi
+          # IMPORTANT: Do not call `cmake --preset` directly here.
+          # KrKr2-Next's build/build_ios.sh discovers/bootstraps vcpkg and
+          # exports VCPKG_ROOT immediately before invoking CMake. Calling CMake
+          # first leaves VCPKG_ROOT empty, producing /scripts/buildsystems/vcpkg.cmake.
+          echo "Apple libtool: $(command -v libtool)"
+          /usr/bin/libtool -V 2>&1 | head -n 1 || true
+          echo "GNU libtoolize shim: $(command -v libtoolize || true)"
 
           set +e
           bash ./build.sh ios release --jobs=4
