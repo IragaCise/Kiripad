@@ -41,19 +41,32 @@ jobs:
           # KrKr2-Next uses vcpkg host tools while cross-compiling for iOS.
           # gperf's current vcpkg port requires GNU autotools on macOS, and
           # the upstream CMake configuration uses Ninja.
-          brew install ninja autoconf automake autoconf-archive
+          brew install ninja autoconf automake autoconf-archive libtool gettext pkgconf
 
           BREW_PREFIX="$(brew --prefix)"
-          echo "$BREW_PREFIX/bin" >> "$GITHUB_PATH"
-          echo "ACLOCAL_PATH=$BREW_PREFIX/share/aclocal" >> "$GITHUB_ENV"
+          GETTEXT_PREFIX="$(brew --prefix gettext)"
+          LIBTOOL_PREFIX="$(brew --prefix libtool)"
+          AUTOCONF_ARCHIVE_PREFIX="$(brew --prefix autoconf-archive)"
+
+          # gettext is keg-only on macOS/Homebrew and GNU libtool uses a gnubin
+          # directory for unprefixed tool names. vcpkg's autoreconf subprocesses
+          # need both locations explicitly.
+          printf '%s\n' \
+            "$GETTEXT_PREFIX/bin" \
+            "$LIBTOOL_PREFIX/libexec/gnubin" \
+            "$BREW_PREFIX/bin" >> "$GITHUB_PATH"
+
+          ACLOCAL_COMBINED="$AUTOCONF_ARCHIVE_PREFIX/share/aclocal:$GETTEXT_PREFIX/share/aclocal:$LIBTOOL_PREFIX/share/aclocal:$BREW_PREFIX/share/aclocal"
+          echo "ACLOCAL_PATH=$ACLOCAL_COMBINED" >> "$GITHUB_ENV"
 
           # Make the tools visible in this step as well as all following steps.
-          export PATH="$BREW_PREFIX/bin:$PATH"
-          export ACLOCAL_PATH="$BREW_PREFIX/share/aclocal${ACLOCAL_PATH:+:$ACLOCAL_PATH}"
+          export PATH="$GETTEXT_PREFIX/bin:$LIBTOOL_PREFIX/libexec/gnubin:$BREW_PREFIX/bin:$PATH"
+          export ACLOCAL_PATH="$ACLOCAL_COMBINED${ACLOCAL_PATH:+:$ACLOCAL_PATH}"
           hash -r
 
           echo "Homebrew prefix: $BREW_PREFIX"
           echo "PATH: $PATH"
+          echo "ACLOCAL_PATH: $ACLOCAL_PATH"
           command -v ninja
           ninja --version
           command -v autoconf
@@ -62,6 +75,10 @@ jobs:
           automake --version | head -n 1
           command -v aclocal
           aclocal --version | head -n 1
+          command -v autoreconf
+          command -v autopoint
+          autopoint --version | head -n 1
+          command -v libtoolize || command -v glibtoolize
           flutter --version
 
       - name: Cache vcpkg binary archives
@@ -90,8 +107,11 @@ jobs:
           # Reassert Homebrew paths here so vcpkg/CMake subprocesses can see
           # the host build tools even if the runner image PATH changes.
           BREW_PREFIX="$(brew --prefix)"
-          export PATH="$BREW_PREFIX/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
-          export ACLOCAL_PATH="$BREW_PREFIX/share/aclocal${ACLOCAL_PATH:+:$ACLOCAL_PATH}"
+          GETTEXT_PREFIX="$(brew --prefix gettext)"
+          LIBTOOL_PREFIX="$(brew --prefix libtool)"
+          AUTOCONF_ARCHIVE_PREFIX="$(brew --prefix autoconf-archive)"
+          export PATH="$GETTEXT_PREFIX/bin:$LIBTOOL_PREFIX/libexec/gnubin:$BREW_PREFIX/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+          export ACLOCAL_PATH="$AUTOCONF_ARCHIVE_PREFIX/share/aclocal:$GETTEXT_PREFIX/share/aclocal:$LIBTOOL_PREFIX/share/aclocal:$BREW_PREFIX/share/aclocal${ACLOCAL_PATH:+:$ACLOCAL_PATH}"
           hash -r
 
           echo "Build prerequisite check:"
@@ -100,12 +120,51 @@ jobs:
           command -v autoconf && autoconf --version | head -n 1
           command -v automake && automake --version | head -n 1
           command -v aclocal && aclocal --version | head -n 1
+          command -v autoreconf
+          command -v autopoint && autopoint --version | head -n 1
+          command -v libtoolize || command -v glibtoolize
+
+          dump_vcpkg_failure_logs() {
+            echo ""
+            echo "===== vcpkg failure diagnostics ====="
+            local root=".devtools/vcpkg/buildtrees"
+            if [[ -d "$root/libexif" ]]; then
+              for f in "$root"/libexif/autoconf-*-err.log "$root"/libexif/autoconf-*-out.log; do
+                [[ -f "$f" ]] || continue
+                echo "----- $f (last 200 lines) -----"
+                tail -n 200 "$f" || true
+              done
+            fi
+            if [[ -f out/ios/release/vcpkg-manifest-install.log ]]; then
+              echo "----- vcpkg-manifest-install.log (last 200 lines) -----"
+              tail -n 200 out/ios/release/vcpkg-manifest-install.log || true
+            fi
+          }
+
+          cd .engine-src/KrKr2-Next
+
+          # Configure explicitly once and pin CMAKE_MAKE_PROGRAM to the Ninja
+          # executable that passed the prerequisite check. This avoids the
+          # misleading secondary "CMAKE_MAKE_PROGRAM is not set" failure after
+          # a vcpkg configure error.
+          NINJA_BIN="$(command -v ninja)"
+          set +e
+          cmake --preset "iOS Release Config" -DCMAKE_MAKE_PROGRAM="$NINJA_BIN"
+          CONFIGURE_STATUS=$?
+          set -e
+          if [[ $CONFIGURE_STATUS -ne 0 ]]; then
+            dump_vcpkg_failure_logs
+            echo "Explicit iOS CMake configure failed with status: $CONFIGURE_STATUS"
+            exit "$CONFIGURE_STATUS"
+          fi
 
           set +e
-          cd .engine-src/KrKr2-Next
           bash ./build.sh ios release --jobs=4
           UPSTREAM_STATUS=$?
           set -e
+          if [[ $UPSTREAM_STATUS -ne 0 ]]; then
+            dump_vcpkg_failure_logs
+          fi
           cd ../..
 
           LIBDIR=".engine-src/KrKr2-Next/bridge/flutter_engine_bridge/ios/Libs"
