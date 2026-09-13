@@ -1,4 +1,4 @@
-name: Build KiriPad Phase 2A.16.1 Native Sanoba XP3 Filter Fix
+name: Build KiriPad Phase 2A.17 Bypass Startup XP3 Filter
 
 on:
   workflow_dispatch:
@@ -523,21 +523,42 @@ jobs:
           else:
               line_start += 1
 
-          marker = "KiriPad Phase 2A.16.1 - Sanoba Witch native XP3 extraction filter."
+          marker = "KiriPad Phase 2A.17 - Sanoba Witch selective native XP3 extraction filter."
           if marker in text:
               raise SystemExit("Native Sanoba filter marker already present unexpectedly")
 
-          native_block = r'''    // KiriPad Phase 2A.16.1 - Sanoba Witch native XP3 extraction filter.
+          native_block = r'''    // KiriPad Phase 2A.17 - Sanoba Witch selective native XP3 extraction filter.
               //
-              // Kirikiroid2 compatibility filter:
-              //   k = h ^ 0x1DDB6E7A;
-              //   k = h ^ 0x7A ^ (k >> 8) ^ (k >> 16) ^ (k >> 24);
-              //   if(!(k & 0xFF)) k = 208;
-              //   b.xor(0, l, k);
+              // Phase 2A.16.1 proved that applying the XOR transform globally
+              // still leads to a startup-script SIGSEGV.  Phase 2A.14 proved
+              // data.xp3>startup.tjs runs correctly without the filter.
               //
-              // Execute the identical transform directly on the current XP3
-              // extraction buffer and return before the managed TJS decoder.
+              // Therefore bypass startup.tjs and apply the native XOR to later
+              // XP3-extracted files only.  This is a diagnostic bridge toward
+              // identifying which resources actually need the Kirikiroid2
+              // compatibility transform.
               {
+                  const std::string kiripadFileName = info->FileName.AsStdString();
+                  const std::string startupName = "startup.tjs";
+
+                  const bool kiripadIsStartup =
+                      kiripadFileName == startupName ||
+                      (kiripadFileName.size() >= startupName.size() &&
+                       kiripadFileName.compare(
+                           kiripadFileName.size() - startupName.size(),
+                           startupName.size(),
+                           startupName) == 0);
+
+                  if(kiripadIsStartup) {
+                      static bool kiripadStartupLogged = false;
+                      if(!kiripadStartupLogged) {
+                          TVPAddImportantLog(
+                              TJS_W("(info) KiriPad 2A.17 bypassing XP3 XOR for startup.tjs"));
+                          kiripadStartupLogged = true;
+                      }
+                      return;
+                  }
+
                   const tjs_uint32 h = info->FileHash;
                   tjs_uint32 k = h ^ (tjs_uint32)0x1DDB6E7A;
                   k = h ^ (tjs_uint32)0x7A ^
@@ -554,7 +575,7 @@ jobs:
                   static bool kiripadLogged = false;
                   if(!kiripadLogged) {
                       TVPAddImportantLog(
-                          TJS_W("(info) KiriPad 2A.16.1 native Sanoba XP3 filter active"));
+                          TJS_W("(info) KiriPad 2A.17 selective native Sanoba XP3 filter active"));
                       kiripadLogged = true;
                   }
                   return;
@@ -576,12 +597,13 @@ jobs:
           for token in (
               "0x1DDB6E7A",
               "p[i] ^= xorval;",
-              "KiriPad 2A.16.1 native Sanoba XP3 filter active",
+              "KiriPad 2A.17 bypassing XP3 XOR for startup.tjs",
+              "KiriPad 2A.17 selective native Sanoba XP3 filter active",
           ):
               if token not in patched:
                   raise SystemExit(f"Native Sanoba filter verification failed: {token}")
 
-          print("Installed Phase 2A.16.1 native Sanoba XP3 filter.")
+          print("Installed Phase 2A.17 selective native Sanoba XP3 filter.")
           print(patched[wrapper2:managed2 + len(managed_line) + 300])
           PY
 
@@ -1210,7 +1232,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A16_1-runtime-build-logs
+          name: KiriPad-Phase2A17-runtime-build-logs
           path: artifacts/runtime-build-logs
           if-no-files-found: warn
           retention-days: 14
@@ -1219,7 +1241,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A16_1-runtime-unsigned-ipa
+          name: KiriPad-Phase2A17-runtime-unsigned-ipa
           path: artifacts/KiriPad-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
@@ -1228,7 +1250,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A16_1-runtime-source-info
+          name: KiriPad-Phase2A17-runtime-source-info
           path: artifacts/runtime-source-info
           if-no-files-found: warn
           retention-days: 14
