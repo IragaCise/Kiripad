@@ -1,0 +1,167 @@
+name: KiriPad Phase 2A.23 Alert Path Probe
+
+on:
+  workflow_dispatch:
+    inputs:
+      engine_ref:
+        description: "KrKr2-Next git ref (branch/tag/commit)"
+        required: true
+        default: "1abd1ed4e8aec7abd5d2524c3a9ad7886880602f"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: Locate startup alert and TJS corruption paths
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout KiriPad
+        uses: actions/checkout@v4
+
+      - name: Fetch pinned KrKr2-Next source
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .engine-src
+          mkdir -p .engine-src
+          git clone --filter=blob:none https://github.com/reAAAq/KrKr2-Next.git .engine-src/KrKr2-Next
+          cd .engine-src/KrKr2-Next
+          git checkout "${{ inputs.engine_ref }}"
+          git rev-parse HEAD | tee ../../engine-commit.txt
+
+      - name: Probe startup alert and TJS execution paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd .engine-src/KrKr2-Next
+          OUT="$GITHUB_WORKSPACE/alert-path-probe.txt"
+          : > "$OUT"
+
+          {
+            echo "KiriPad Phase 2A.23 Alert Path Probe"
+            echo "Commit: $(git rev-parse HEAD)"
+            echo
+            echo "=== Exact/near-exact error strings ==="
+          } >> "$OUT"
+
+          grep -RIna \
+            --exclude-dir=.git \
+            -E 'corrupted execution file|startup failed|corrupt(ed)? .*execution|execution file|invalid character' \
+            cpp bridge platforms 2>/dev/null | tee -a "$OUT" || true
+
+          {
+            echo
+            echo "=== Message box / inform / alert APIs ==="
+          } >> "$OUT"
+
+          grep -RIna \
+            --exclude-dir=.git \
+            -E 'TVPShow.*Message|Show.*MessageBox|MessageBox|System.*inform|inform[[:space:]]*\(|TVP.*Inform|TVP.*Alert|alert[[:space:]]*\(' \
+            cpp bridge platforms 2>/dev/null | head -n 1600 | tee -a "$OUT" || true
+
+          {
+            echo
+            echo "=== Startup-script control flow ==="
+          } >> "$OUT"
+
+          grep -RIna \
+            --exclude-dir=.git \
+            -E 'TVPExecuteStartupScript|TVPInitializeStartupScript|Startup script|startup\.tjs|afterstartup\.tjs|TVPExecuteStorage' \
+            cpp bridge platforms 2>/dev/null | head -n 1400 | tee -a "$OUT" || true
+
+          {
+            echo
+            echo "=== Bytecode / TJS execution and corruption paths ==="
+          } >> "$OUT"
+
+          grep -RIna \
+            --exclude-dir=.git \
+            -E 'LoadByteCode|ReadByteCode|ExecuteCode|ExecScript|SetText|bytecode|ByteCode|corrupt|TJSBinary|TJS2' \
+            cpp/core/tjs2 cpp/core/base 2>/dev/null | head -n 2400 | tee -a "$OUT" || true
+
+          echo >> "$OUT"
+          echo "=== Context windows around the most relevant matches ===" >> "$OUT"
+
+          python3 - <<'PY' | tee -a "$OUT"
+          from pathlib import Path
+          import re
+
+          roots = [Path("cpp"), Path("bridge"), Path("platforms")]
+          pats = [
+              re.compile(r"corrupted execution file", re.I),
+              re.compile(r"startup failed", re.I),
+              re.compile(r"TVPExecuteStartupScript"),
+              re.compile(r"TVPInitializeStartupScript"),
+              re.compile(r"TVPShow.*Message", re.I),
+              re.compile(r"MessageBox", re.I),
+              re.compile(r"\binform\s*\(", re.I),
+              re.compile(r"LoadByteCode"),
+              re.compile(r"ReadByteCode"),
+              re.compile(r"SetText"),
+              re.compile(r"ExecuteCode"),
+          ]
+
+          hits = []
+          for root in roots:
+              if not root.exists():
+                  continue
+              for p in root.rglob("*"):
+                  if not p.is_file() or p.suffix.lower() not in {
+                      ".cpp",".cc",".cxx",".h",".hpp",".mm",".m",".c",".tjs",".txt"
+                  }:
+                      continue
+                  try:
+                      lines = p.read_text(encoding="utf-8").splitlines()
+                  except Exception:
+                      try:
+                          lines = p.read_text(encoding="utf-8", errors="ignore").splitlines()
+                      except Exception:
+                          continue
+                  for i, line in enumerate(lines):
+                      if any(rx.search(line) for rx in pats):
+                          hits.append((p, i, lines))
+
+          # Deduplicate nearby hits from the same file.
+          selected = []
+          for p, i, lines in hits:
+              if any(sp == p and abs(si - i) < 30 for sp, si, _ in selected):
+                  continue
+              selected.append((p, i, lines))
+              if len(selected) >= 35:
+                  break
+
+          if not selected:
+              print("NO RELEVANT CONTEXT MATCHES FOUND")
+          else:
+              for p, i, lines in selected:
+                  lo = max(0, i - 55)
+                  hi = min(len(lines), i + 56)
+                  print(f"\n----- {p}:{i+1} -----")
+                  for n in range(lo, hi):
+                      print(f"{n+1:5d}: {lines[n]}")
+                  print("----- end context -----")
+          PY
+
+          {
+            echo
+            echo "=== Probe complete ==="
+            echo "No source files were modified and no engine build was performed."
+          } >> "$OUT"
+
+          echo
+          echo "===== probe tail ====="
+          tail -n 260 "$OUT"
+
+      - name: Upload alert-path probe
+        uses: actions/upload-artifact@v4
+        with:
+          name: KiriPad-Phase2A23-alert-path-probe
+          path: |
+            alert-path-probe.txt
+            engine-commit.txt
+          if-no-files-found: error
+          retention-days: 14
