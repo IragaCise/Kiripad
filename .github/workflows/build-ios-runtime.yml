@@ -1,4 +1,4 @@
-name: Build KiriPad Phase 2A.24 Alert Capture
+name: Build KiriPad Phase 2A.26 TJS Caller Trace
 
 on:
   workflow_dispatch:
@@ -882,6 +882,133 @@ jobs:
           print("Installed Phase 2A.24 alert capture.")
           PY
 
+      - name: Enable TJS stack tracer and capture System.inform caller
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd .engine-src/KrKr2-Next
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          # ------------------------------------------------------------
+          # 1) Enable the built-in TJS stack tracer before startup.tjs.
+          # ------------------------------------------------------------
+          spath = Path("cpp/core/base/ScriptMgnIntf.cpp")
+          stext = spath.read_text(encoding="utf-8")
+
+          inc = '#include "../tjs2/tjsDebug.h"\n'
+          if inc not in stext:
+              first_include = stext.find("#include")
+              if first_include < 0:
+                  raise SystemExit("ScriptMgnIntf.cpp include insertion point not found")
+              stext = stext[:first_include] + inc + stext[first_include:]
+
+          sig = re.search(
+              r'void\s+TVPInitializeStartupScript\s*\(\s*\)\s*\{',
+              stext,
+              re.S,
+          )
+          if not sig:
+              raise SystemExit("TVPInitializeStartupScript signature not found")
+
+          marker = "KiriPad 2A.26 TJS stack tracer enabled"
+          if marker in stext:
+              raise SystemExit("2A.26 startup tracer marker already present unexpectedly")
+
+          brace = stext.find("{", sig.start(), sig.end())
+          if brace < 0:
+              raise SystemExit("TVPInitializeStartupScript opening brace not found")
+
+          inject = r'''
+              static bool kiriPad2A26TracerEnabled = false;
+              if(!kiriPad2A26TracerEnabled) {
+                  TJS::TJSAddRefStackTracer();
+                  kiriPad2A26TracerEnabled = true;
+                  TVPAddImportantLog(
+                      TJS_W("(info) KiriPad 2A.26 TJS stack tracer enabled"));
+              }
+          '''
+          stext = stext[:brace + 1] + inject + stext[brace + 1:]
+          spath.write_text(stext, encoding="utf-8")
+
+          # ------------------------------------------------------------
+          # 2) At System.inform, dump the exact TJS call stack.
+          #    This is the path proven by 2A.24 to produce the dialog.
+          # ------------------------------------------------------------
+          ipath = Path("cpp/core/base/impl/SystemImpl.cpp")
+          itext = ipath.read_text(encoding="utf-8")
+
+          iinc = '#include "../../tjs2/tjsDebug.h"\n'
+          if iinc not in itext:
+              first_include = itext.find("#include")
+              if first_include < 0:
+                  raise SystemExit("SystemImpl.cpp include insertion point not found")
+              itext = itext[:first_include] + iinc + itext[first_include:]
+
+          inform = re.search(
+              r'TJS_BEGIN_NATIVE_METHOD_DECL\s*\(\s*/\*func\.\s*name\*/\s*inform\s*\)\s*\{',
+              itext,
+              re.S,
+          )
+          if not inform:
+              raise SystemExit("System.inform native method not found")
+
+          # Insert immediately before the button-handling branch, after both
+          # text and caption have been resolved.
+          branch = re.search(
+              r'if\s*\(\s*numparams\s*>=\s*3\s*&&\s*param\[2\]->Type\(\)\s*!=\s*tvtVoid\s*\)\s*\{',
+              itext[inform.end():],
+              re.S,
+          )
+          if not branch:
+              raise SystemExit("System.inform button branch not found")
+          pos = inform.end() + branch.start()
+
+          imarker = "KiriPad 2A.26 System.inform"
+          if imarker in itext:
+              raise SystemExit("2A.26 System.inform marker already present unexpectedly")
+
+          iblock = r'''
+              {
+                  ttstr kiriPad2A26Trace =
+                      TJS::TJSGetStackTraceString(24, TJS_W(" <-- "));
+                  TVPAddLog(
+                      ttstr(TJS_W("(info) KiriPad 2A.26 System.inform text='")) +
+                      text + TJS_W("' caption='") + caption + TJS_W("'"));
+                  TVPAddLog(
+                      ttstr(TJS_W("(info) KiriPad 2A.26 TJS caller trace: ")) +
+                      kiriPad2A26Trace);
+              }
+
+          '''
+          itext = itext[:pos] + iblock + itext[pos:]
+          ipath.write_text(itext, encoding="utf-8")
+
+          # ------------------------------------------------------------
+          # Verification and useful source windows in Actions log.
+          # ------------------------------------------------------------
+          s2 = spath.read_text(encoding="utf-8")
+          i2 = ipath.read_text(encoding="utf-8")
+          required = [
+              (s2, "KiriPad 2A.26 TJS stack tracer enabled"),
+              (s2, "TJS::TJSAddRefStackTracer();"),
+              (i2, "KiriPad 2A.26 System.inform text="),
+              (i2, "TJS::TJSGetStackTraceString(24"),
+          ]
+          for body, token in required:
+              if token not in body:
+                  raise SystemExit(f"2A.26 verification failed: {token}")
+
+          print("Installed Phase 2A.26 TJS caller trace.")
+          print("===== TVPInitializeStartupScript window =====")
+          p = s2.index("KiriPad 2A.26 TJS stack tracer enabled")
+          print(s2[max(0, p-650):p+650])
+          print("===== System.inform window =====")
+          p = i2.index("KiriPad 2A.26 System.inform text=")
+          print(i2[max(0, p-850):p+1200])
+          PY
+
       - name: Configure and build upstream iOS engine only
         shell: bash
         run: |
@@ -1507,7 +1634,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A24-runtime-build-logs
+          name: KiriPad-Phase2A26-runtime-build-logs
           path: artifacts/runtime-build-logs
           if-no-files-found: warn
           retention-days: 14
@@ -1516,7 +1643,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A24-runtime-unsigned-ipa
+          name: KiriPad-Phase2A26-runtime-unsigned-ipa
           path: artifacts/KiriPad-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
@@ -1525,7 +1652,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A24-runtime-source-info
+          name: KiriPad-Phase2A26-runtime-source-info
           path: artifacts/runtime-source-info
           if-no-files-found: warn
           retention-days: 14
