@@ -1,4 +1,4 @@
-name: Build KiriPad Phase 2A.26 TJS Caller Trace
+name: Build KiriPad Phase 2A.27 Startup Source Probe
 
 on:
   workflow_dispatch:
@@ -1009,6 +1009,150 @@ jobs:
           print(i2[max(0, p-850):p+1200])
           PY
 
+      - name: Probe decoded startup.tjs source around the alert text
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd .engine-src/KrKr2-Next
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("cpp/core/base/ScriptMgnIntf.cpp")
+          text = path.read_text(encoding="utf-8")
+
+          marker = "KiriPad 2A.27 startup source stats"
+          if marker in text:
+              raise SystemExit("2A.27 startup source probe already present unexpectedly")
+
+          needle = "    stream->Read(buffer, 0);\n"
+          pos = text.find(needle)
+          if pos < 0:
+              raise SystemExit("stream->Read(buffer, 0) insertion point not found")
+
+          block = r'''
+              if(shortname == ttstr(TJS_W("startup.tjs"))) {
+                  std::string kiriPad2A27Utf8 = buffer.AsStdString();
+
+                  size_t kiriPad2A27Newlines = 0;
+                  for(char ch : kiriPad2A27Utf8) {
+                      if(ch == '\n')
+                          ++kiriPad2A27Newlines;
+                  }
+
+                  spdlog::info(
+                      "KiriPad 2A.27 startup source stats: chars={} utf8_bytes={} lines={}",
+                      static_cast<unsigned long long>(buffer.GetLen()),
+                      static_cast<unsigned long long>(kiriPad2A27Utf8.size()),
+                      static_cast<unsigned long long>(kiriPad2A27Newlines + 1));
+
+                  auto kiriPad2A27Escape = [](const std::string &src) {
+                      std::string out;
+                      out.reserve(src.size() + 32);
+                      for(unsigned char ch : src) {
+                          switch(ch) {
+                              case '\r': out += "\\r"; break;
+                              case '\n': out += "\\n"; break;
+                              case '\t': out += "\\t"; break;
+                              default:
+                                  if(ch < 0x20 || ch == 0x7f) {
+                                      char tmp[8];
+                                      std::snprintf(tmp, sizeof(tmp), "\\x%02X",
+                                                    static_cast<unsigned int>(ch));
+                                      out += tmp;
+                                  } else {
+                                      out.push_back(static_cast<char>(ch));
+                                  }
+                                  break;
+                          }
+                      }
+                      return out;
+                  };
+
+                  auto kiriPad2A27LogAround =
+                      [&](const char *label, const char *literal) {
+                          const std::string key(literal);
+                          const size_t hit = kiriPad2A27Utf8.find(key);
+                          if(hit == std::string::npos) {
+                              spdlog::info(
+                                  "KiriPad 2A.27 startup literal '{}' not found",
+                                  label);
+                              return;
+                          }
+
+                          const size_t radius = 220;
+                          const size_t begin = hit > radius ? hit - radius : 0;
+                          const size_t end =
+                              std::min(kiriPad2A27Utf8.size(),
+                                       hit + key.size() + radius);
+                          const std::string snippet =
+                              kiriPad2A27Utf8.substr(begin, end - begin);
+
+                          spdlog::info(
+                              "KiriPad 2A.27 startup literal '{}' pos={} context='{}'",
+                              label,
+                              static_cast<unsigned long long>(hit),
+                              kiriPad2A27Escape(snippet));
+                      };
+
+                  kiriPad2A27LogAround("startup failed", "startup failed");
+                  kiriPad2A27LogAround(
+                      "corrupted execution file", "corrupted execution file");
+
+                  const size_t previewLen =
+                      std::min<size_t>(320, kiriPad2A27Utf8.size());
+                  spdlog::info(
+                      "KiriPad 2A.27 startup head='{}'",
+                      kiriPad2A27Escape(
+                          kiriPad2A27Utf8.substr(0, previewLen)));
+
+                  if(kiriPad2A27Utf8.size() > previewLen) {
+                      const size_t tailBegin =
+                          kiriPad2A27Utf8.size() - previewLen;
+                      spdlog::info(
+                          "KiriPad 2A.27 startup tail='{}'",
+                          kiriPad2A27Escape(
+                              kiriPad2A27Utf8.substr(
+                                  tailBegin, previewLen)));
+                  }
+              }
+
+          '''
+
+          text = text[:pos + len(needle)] + block + text[pos + len(needle):]
+
+          # Ensure the small helpers we use are available.
+          first_include = text.find("#include")
+          if first_include < 0:
+              raise SystemExit("include insertion point not found")
+          extra = ""
+          if "#include <algorithm>" not in text:
+              extra += "#include <algorithm>\n"
+          if "#include <cstdio>" not in text:
+              extra += "#include <cstdio>\n"
+          if "#include <string>" not in text:
+              extra += "#include <string>\n"
+          if extra:
+              text = text[:first_include] + extra + text[first_include:]
+
+          path.write_text(text, encoding="utf-8")
+
+          patched = path.read_text(encoding="utf-8")
+          required = (
+              "KiriPad 2A.27 startup source stats",
+              "KiriPad 2A.27 startup literal",
+              "KiriPad 2A.27 startup head=",
+              'shortname == ttstr(TJS_W("startup.tjs"))',
+          )
+          for token in required:
+              if token not in patched:
+                  raise SystemExit(f"2A.27 verification failed: {token}")
+
+          p = patched.index("KiriPad 2A.27 startup source stats")
+          print("Installed Phase 2A.27 startup source probe.")
+          print("===== patched source window =====")
+          print(patched[max(0, p-1600):p+4200])
+          PY
+
       - name: Configure and build upstream iOS engine only
         shell: bash
         run: |
@@ -1634,7 +1778,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A26-runtime-build-logs
+          name: KiriPad-Phase2A27-runtime-build-logs
           path: artifacts/runtime-build-logs
           if-no-files-found: warn
           retention-days: 14
@@ -1643,7 +1787,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A26-runtime-unsigned-ipa
+          name: KiriPad-Phase2A27-runtime-unsigned-ipa
           path: artifacts/KiriPad-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
@@ -1652,7 +1796,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A26-runtime-source-info
+          name: KiriPad-Phase2A27-runtime-source-info
           path: artifacts/runtime-source-info
           if-no-files-found: warn
           retention-days: 14
