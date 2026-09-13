@@ -1,4 +1,4 @@
-name: Build KiriPad Phase 2A.20 Direct Script Trace
+name: Build KiriPad Phase 2A.22 PackinOne Compat
 
 on:
   workflow_dispatch:
@@ -708,134 +708,111 @@ jobs:
           print("Installed Phase 2A.19.3 storage-entry trace.")
           PY
 
-      - name: Instrument direct script and exception trace
+      - name: Add PackinOne compatibility aggregator
         shell: bash
         run: |
           set -euo pipefail
           cd .engine-src/KrKr2-Next
           python3 - <<'PY'
           from pathlib import Path
-          import re
 
-          path = Path("cpp/core/base/ScriptMgnIntf.cpp")
+          path = Path("cpp/core/plugin/ncbind.cpp")
           text = path.read_text(encoding="utf-8")
 
-          def inject_after_opening_brace(sig_re, code, label, count=1):
-              global text
-              matches = list(re.finditer(sig_re, text, re.S))
-              if len(matches) < count:
-                  raise SystemExit(f"{label}: signature not found")
-              # Inject into the first matching overload only unless count > 1.
-              done = 0
-              offset = 0
-              for m in matches:
-                  if done >= count:
-                      break
-                  start = m.end() + offset
-                  brace = text.find("{", start)
-                  if brace < 0:
-                      raise SystemExit(f"{label}: opening brace not found")
-                  text = text[:brace+1] + code + text[brace+1:]
-                  offset += len(code)
-                  done += 1
+          marker = 'KiriPad 2A.22 PackinOne compat: activating'
+          if marker in text:
+              raise SystemExit("Phase 2A.22 PackinOne patch already present")
 
-          # Named TVPExecuteScript overload(s). We only add entry logs.
-          script_pat = (
-              r'void\s+TVPExecuteScript\s*\(\s*const\s+ttstr\s*&\s*content\s*,'
-              r'(?=[^)]*const\s+ttstr\s*&\s*name\b)[^)]*\)'
-          )
-          script_matches = list(re.finditer(script_pat, text, re.S))
-          if not script_matches:
-              raise SystemExit("named TVPExecuteScript overload not found")
-          # Inject into every named overload, processing from end to start.
-          for m in reversed(script_matches):
-              brace = text.find("{", m.end())
-              if brace < 0:
-                  raise SystemExit("named TVPExecuteScript opening brace not found")
-              code = r'''
-              TVPAddImportantLog(
-                  TJS_W("(info) KiriPad 2A.20 TVPExecuteScript named: ") + name);
+          needle = '''    spdlog::warn("ncbAutoRegister::LoadModule('{}'): module not found in internal plugin map",'''
+          pos = text.find(needle)
+          if pos < 0:
+              raise SystemExit("PackinOne insertion point not found in ncbind.cpp")
+
+          block = r'''
+              // KiriPad Phase 2A.22:
+              // PackinOne.dll is an aggregate Kirikiri plugin used by this title.
+              // KrKr2-Next already carries several of its component plugins under
+              // their original standalone module names.  When the game requests
+              // PackinOne.dll, load the compatible internal components that are
+              // actually present, then expose PackinOne.dll as loaded.
+              if(name == ttstr(TJS_W("packinone.dll"))) {
+                  spdlog::info("KiriPad 2A.22 PackinOne compat: activating");
+
+                  const tjs_char *components[] = {
+                      TJS_W("fstat.dll"),
+                      TJS_W("ScriptsEx.dll"),
+                      TJS_W("dirlist.dll"),
+                      TJS_W("csvParser.dll"),
+                      TJS_W("layerExImage.dll"),
+                      TJS_W("layerExRaster.dll"),
+                      TJS_W("addFont.dll"),
+                      TJS_W("saveStruct.dll")
+                  };
+
+                  int available = 0;
+                  int loaded = 0;
+                  const int component_count =
+                      static_cast<int>(sizeof(components) / sizeof(components[0]));
+
+                  for(int i = 0; i < component_count; ++i) {
+                      ttstr component(components[i]);
+                      if(HasModule(component)) {
+                          ++available;
+                          spdlog::info(
+                              "KiriPad 2A.22 PackinOne component available: '{}'",
+                              component.AsStdString());
+                          try {
+                              if(LoadModule(component)) {
+                                  ++loaded;
+                                  spdlog::info(
+                                      "KiriPad 2A.22 PackinOne component loaded: '{}'",
+                                      component.AsStdString());
+                              } else {
+                                  spdlog::warn(
+                                      "KiriPad 2A.22 PackinOne component load returned false: '{}'",
+                                      component.AsStdString());
+                              }
+                          } catch(...) {
+                              spdlog::error(
+                                  "KiriPad 2A.22 PackinOne component threw during load: '{}'",
+                                  component.AsStdString());
+                              throw;
+                          }
+                      } else {
+                          spdlog::info(
+                              "KiriPad 2A.22 PackinOne component unavailable in internal map: '{}'",
+                              component.AsStdString());
+                      }
+                  }
+
+                  // The native Windows DLL itself cannot be loaded on iOS, but
+                  // successful component registration provides its compatible API
+                  // surface.  Mark the aggregate module as registered so the
+                  // game's Plugins.link("PackinOne.dll") succeeds.
+                  TVPRegisteredPlugins.insert(name);
+                  spdlog::info(
+                      "KiriPad 2A.22 PackinOne compat ready: loaded {}/{} available components",
+                      loaded, available);
+                  return true;
+              }
+
           '''
-              text = text[:brace+1] + code + text[brace+1:]
 
-          # Named TVPExecuteExpression overload(s).
-          expr_pat = (
-              r'void\s+TVPExecuteExpression\s*\(\s*const\s+ttstr\s*&\s*content\s*,'
-              r'(?=[^)]*const\s+ttstr\s*&\s*name\b)[^)]*\)'
-          )
-          expr_matches = list(re.finditer(expr_pat, text, re.S))
-          for m in reversed(expr_matches):
-              brace = text.find("{", m.end())
-              if brace < 0:
-                  raise SystemExit("named TVPExecuteExpression opening brace not found")
-              code = r'''
-              TVPAddImportantLog(
-                  TJS_W("(info) KiriPad 2A.20 TVPExecuteExpression named: ") + name);
-          '''
-              text = text[:brace+1] + code + text[brace+1:]
-
-          # Direct bytecode execution entry.
-          bc = re.search(
-              r'void\s+TVPExecuteBytecode\s*\([^)]*const\s+tjs_char\s*\*\s*name[^)]*\)',
-              text,
-              re.S,
-          )
-          if not bc:
-              raise SystemExit("TVPExecuteBytecode signature not found")
-          brace = text.find("{", bc.end())
-          if brace < 0:
-              raise SystemExit("TVPExecuteBytecode opening brace not found")
-          code = r'''
-              TVPAddImportantLog(
-                  TJS_W("(info) KiriPad 2A.20 TVPExecuteBytecode: ") +
-                  ttstr(name ? name : TJS_W("(null)")));
-          '''
-          text = text[:brace+1] + code + text[brace+1:]
-
-          # Unhandled TJS script error: log the actual message.
-          ue = re.search(
-              r'bool\s+TVPProcessUnhandledException\s*\(\s*eTJSScriptError\s*&\s*e\s*\)',
-              text,
-              re.S,
-          )
-          if ue:
-              brace = text.find("{", ue.end())
-              if brace >= 0:
-                  code = r'''
-              TVPAddImportantLog(
-                  TJS_W("(info) KiriPad 2A.20 unhandled script error: ") +
-                  e.GetMessage());
-          '''
-                  text = text[:brace+1] + code + text[brace+1:]
-
-          # Generic eTJS exception, also has GetMessage() in this codebase.
-          ge = re.search(
-              r'bool\s+TVPProcessUnhandledException\s*\(\s*eTJS\s*&\s*e\s*\)',
-              text,
-              re.S,
-          )
-          if ge:
-              brace = text.find("{", ge.end())
-              if brace >= 0:
-                  code = r'''
-              TVPAddImportantLog(
-                  TJS_W("(info) KiriPad 2A.20 unhandled TJS error: ") +
-                  e.GetMessage());
-          '''
-                  text = text[:brace+1] + code + text[brace+1:]
-
+          text = text[:pos] + block + text[pos:]
           path.write_text(text, encoding="utf-8")
 
           patched = path.read_text(encoding="utf-8")
           required = (
-              "KiriPad 2A.20 TVPExecuteScript named:",
-              "KiriPad 2A.20 TVPExecuteBytecode:",
+              "KiriPad 2A.22 PackinOne compat: activating",
+              "KiriPad 2A.22 PackinOne component available:",
+              "TVPRegisteredPlugins.insert(name);",
+              'name == ttstr(TJS_W("packinone.dll"))',
           )
           for token in required:
               if token not in patched:
-                  raise SystemExit(f"2A.20 trace verification failed: {token}")
+                  raise SystemExit(f"PackinOne patch verification failed: {token}")
 
-          print("Installed Phase 2A.20 direct script/bytecode trace.")
+          print("Installed Phase 2A.22 PackinOne compatibility aggregator.")
           PY
 
       - name: Configure and build upstream iOS engine only
@@ -1463,7 +1440,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A20-runtime-build-logs
+          name: KiriPad-Phase2A22-runtime-build-logs
           path: artifacts/runtime-build-logs
           if-no-files-found: warn
           retention-days: 14
@@ -1472,7 +1449,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A20-runtime-unsigned-ipa
+          name: KiriPad-Phase2A22-runtime-unsigned-ipa
           path: artifacts/KiriPad-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
@@ -1481,7 +1458,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A20-runtime-source-info
+          name: KiriPad-Phase2A22-runtime-source-info
           path: artifacts/runtime-source-info
           if-no-files-found: warn
           retention-days: 14
