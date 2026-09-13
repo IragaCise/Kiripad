@@ -1,4 +1,4 @@
-name: Build KiriPad Phase 2A.22 PackinOne Compat
+name: Build KiriPad Phase 2A.24 Alert Capture
 
 on:
   workflow_dispatch:
@@ -815,6 +815,73 @@ jobs:
           print("Installed Phase 2A.22 PackinOne compatibility aggregator.")
           PY
 
+      - name: Instrument iOS alert text and script-exception origin
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd .engine-src/KrKr2-Next
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          # 1) Log every iOS message box with its exact caption and text.
+          path = Path("cpp/core/environ/apple/ios/platform.mm")
+          text = path.read_text(encoding="utf-8")
+
+          sig = re.search(
+              r'int\s+TVPShowSimpleMessageBox\s*\(\s*'
+              r'const\s+ttstr\s*&\s*text\s*,\s*'
+              r'const\s+ttstr\s*&\s*caption\s*,',
+              text,
+              re.S,
+          )
+          if not sig:
+              raise SystemExit("iOS TVPShowSimpleMessageBox(ttstr, ttstr, ...) signature not found")
+
+          brace = text.find("{", sig.end())
+          if brace < 0:
+              raise SystemExit("iOS TVPShowSimpleMessageBox opening brace not found")
+
+          marker = "KiriPad 2A.24 ALERT"
+          if marker in text:
+              raise SystemExit("2A.24 iOS alert marker already present unexpectedly")
+
+          inject = r'''
+              spdlog::info(
+                  "KiriPad 2A.24 ALERT caption='{}' text='{}'",
+                  caption.AsStdString(), text.AsStdString());
+          '''
+          text = text[:brace + 1] + inject + text[brace + 1:]
+          path.write_text(text, encoding="utf-8")
+
+          # 2) Mark the two engine-side script-exception dialog sites.
+          spath = Path("cpp/core/base/ScriptMgnIntf.cpp")
+          stext = spath.read_text(encoding="utf-8")
+          needle = "TVPShowSimpleMessageBox(errstr, TVPGetErrorDialogTitle());"
+          count = stext.count(needle)
+          if count < 2:
+              raise SystemExit(
+                  f"Expected at least 2 script-exception dialog calls, found {count}"
+              )
+
+          repl = r'''spdlog::info(
+              "KiriPad 2A.24 ALERT origin=TVPShowScriptException text='{}'",
+              errstr.AsStdString());
+          TVPShowSimpleMessageBox(errstr, TVPGetErrorDialogTitle());'''
+          stext = stext.replace(needle, repl)
+          spath.write_text(stext, encoding="utf-8")
+
+          # Verification.
+          p2 = path.read_text(encoding="utf-8")
+          s2 = spath.read_text(encoding="utf-8")
+          if "KiriPad 2A.24 ALERT caption=" not in p2:
+              raise SystemExit("iOS alert trace verification failed")
+          if s2.count("KiriPad 2A.24 ALERT origin=TVPShowScriptException") < 2:
+              raise SystemExit("script-exception origin verification failed")
+
+          print("Installed Phase 2A.24 alert capture.")
+          PY
+
       - name: Configure and build upstream iOS engine only
         shell: bash
         run: |
@@ -1440,7 +1507,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A22-runtime-build-logs
+          name: KiriPad-Phase2A24-runtime-build-logs
           path: artifacts/runtime-build-logs
           if-no-files-found: warn
           retention-days: 14
@@ -1449,7 +1516,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A22-runtime-unsigned-ipa
+          name: KiriPad-Phase2A24-runtime-unsigned-ipa
           path: artifacts/KiriPad-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
@@ -1458,7 +1525,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A22-runtime-source-info
+          name: KiriPad-Phase2A24-runtime-source-info
           path: artifacts/runtime-source-info
           if-no-files-found: warn
           retention-days: 14
