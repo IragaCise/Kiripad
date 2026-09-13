@@ -1,4 +1,4 @@
-name: Build KiriPad Phase 2A.15 Safe XP3 XOR
+name: Build KiriPad Phase 2A.16 Native Sanoba XP3 Filter
 
 on:
   workflow_dispatch:
@@ -489,6 +489,84 @@ jobs:
           print("Patched CBinaryAccessor::FuncXor with checked byte-wise XOR.")
           p = patched.find(start_marker)
           print(patched[p:p+2200])
+          PY
+
+      - name: Bypass TJS XP3 filter callback for Sanoba Witch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd .engine-src/KrKr2-Next
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("cpp/plugins/xp3filter.cpp")
+          text = path.read_text(encoding="utf-8")
+
+          needle = '''    if(info->SizeOfSelf != sizeof(tTVPXP3ExtractionFilterInfo))
+              TVPThrowExceptionMessage(
+                  TJS_W("Incompatible tTVPXP3ExtractionFilterInfo size"));
+          '''
+          if needle not in text:
+              raise SystemExit("XP3 wrapper insertion point not found")
+
+          replacement = needle + r'''
+              // KiriPad Phase 2A.16 - Sanoba Witch native XP3 extraction filter.
+              //
+              // The Kirikiroid2 compatibility script is:
+              //   k = h ^ 0x1DDB6E7A;
+              //   k = h ^ 0x7A ^ (k >> 8) ^ (k >> 16) ^ (k >> 24);
+              //   if(!(k & 0xFF)) k = 208;
+              //   b.xor(0, l, k);
+              //
+              // On iOS the managed TJS -> CBinaryAccessor::xor path crashes
+              // even with a byte-wise FuncXor implementation.  Execute the
+              // exact same transform directly on the XP3 extraction buffer
+              // and return before creating/fetching the managed decoder.
+              {
+                  const tjs_uint32 h = info->FileHash;
+                  tjs_uint32 k = h ^ (tjs_uint32)0x1DDB6E7A;
+                  k = h ^ (tjs_uint32)0x7A ^
+                      (k >> 8) ^ (k >> 16) ^ (k >> 24);
+
+                  tjs_uint8 xorval = (tjs_uint8)(k & 0xFFu);
+                  if(xorval == 0)
+                      xorval = (tjs_uint8)208;
+
+                  tjs_uint8 *p = static_cast<tjs_uint8 *>(info->Buffer);
+                  for(tjs_uint i = 0; i < info->BufferSize; ++i)
+                      p[i] ^= xorval;
+
+                  static bool kiripadLogged = false;
+                  if(!kiripadLogged) {
+                      TVPAddImportantLog(
+                          TJS_W("(info) KiriPad 2A.16 native Sanoba XP3 filter active"));
+                      kiripadLogged = true;
+                  }
+                  return;
+              }
+          '''
+
+          text = text.replace(needle, replacement, 1)
+          path.write_text(text, encoding="utf-8")
+
+          patched = path.read_text(encoding="utf-8")
+          for token in (
+              "KiriPad Phase 2A.16 - Sanoba Witch native XP3 extraction filter.",
+              "0x1DDB6E7A",
+              "native Sanoba XP3 filter active",
+              "return;",
+          ):
+              if token not in patched:
+                  raise SystemExit(f"Native Sanoba filter verification failed: {token}")
+
+          wrapper = patched.find("TVPXP3ArchiveExtractionFilterWrapper")
+          managed = patched.find("XP3FilterDecoder *decoder = FetchXP3Decoder()", wrapper)
+          native = patched.find("KiriPad Phase 2A.16 - Sanoba Witch", wrapper)
+          if not (wrapper >= 0 and native > wrapper and managed > native):
+              raise SystemExit("Native filter was not inserted before FetchXP3Decoder")
+
+          print("Installed native Sanoba Witch XP3 filter before managed TJS decoder.")
+          print(patched[wrapper:managed+1000])
           PY
 
       - name: Configure and build upstream iOS engine only
@@ -1116,7 +1194,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A15-runtime-build-logs
+          name: KiriPad-Phase2A16-runtime-build-logs
           path: artifacts/runtime-build-logs
           if-no-files-found: warn
           retention-days: 14
@@ -1125,7 +1203,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A15-runtime-unsigned-ipa
+          name: KiriPad-Phase2A16-runtime-unsigned-ipa
           path: artifacts/KiriPad-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
@@ -1134,7 +1212,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A15-runtime-source-info
+          name: KiriPad-Phase2A16-runtime-source-info
           path: artifacts/runtime-source-info
           if-no-files-found: warn
           retention-days: 14
