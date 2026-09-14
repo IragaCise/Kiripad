@@ -1,4 +1,4 @@
-name: Build KiriPad Phase 2A.38 Generic Protected TJS AutoPath
+name: Build KiriPad Phase 2A.38b Generic Protected TJS AutoPath
 
 on:
   workflow_dispatch:
@@ -2075,7 +2075,6 @@ jobs:
                       name.AsStdString();
 
                   if(requested.find('/') == std::string::npos &&
-                     requested.find('\\') == std::string::npos &&
                      requested.size() >= 4 &&
                      requested.compare(
                          requested.size() - 4, 4, ".tjs") == 0) {
@@ -2231,7 +2230,6 @@ jobs:
                       name.AsStdString();
 
                   if(requested.find('/') == std::string::npos &&
-                     requested.find('\\') == std::string::npos &&
                      requested.size() >= 4 &&
                      requested.compare(
                          requested.size() - 4, 4, ".tjs") == 0) {
@@ -2284,6 +2282,11 @@ jobs:
           source_path.write_text(source_text, encoding="utf-8")
 
           patched = source_path.read_text(encoding="utf-8")
+
+          if "requested.find('\\\\')" in patched:
+              raise SystemExit(
+                  "2A.38b: unexpected backslash character check remained"
+              )
 
           # Structural safety checks: return type must still be directly attached to
           # the method declaration, and the helper must be outside the function.
@@ -2968,7 +2971,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A38-runtime-unsigned-ipa
+          name: KiriPad-Phase2A38b-runtime-unsigned-ipa
           path: artifacts/KiriPad-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
