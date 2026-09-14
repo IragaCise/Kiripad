@@ -1,4 +1,4 @@
-name: Build KiriPad Phase 2A.33b XP3 Initialize Index Probe
+name: Build KiriPad Phase 2A.34 Yuzu MD5 Initialize Probe
 
 on:
   workflow_dispatch:
@@ -1661,6 +1661,168 @@ jobs:
 
           PY
 
+      - name: Phase 2A.34 probe Yuzu MD5 raw Initialize entry
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd .engine-src/KrKr2-Next
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("cpp/core/base/ScriptMgnIntf.cpp")
+          text = path.read_text(encoding="utf-8")
+
+          marker = "KiriPad 2A.34 Yuzu MD5 raw-name probe"
+          if marker in text:
+              raise SystemExit("2A.34 marker already present unexpectedly")
+
+          anchor = '''        if(kiriPad2A32Chosen.IsEmpty())
+                      TVPAddImportantLog(TJS_W("(info) KiriPad 2A.32 initialize candidate found=NO"));
+                  else
+                      TVPAddImportantLog(ttstr(TJS_W("(info) KiriPad 2A.32 initialize candidate found=YES path='")) + kiriPad2A32Chosen + TJS_W("'"));
+          '''
+
+          block = r'''        // KiriPad 2A.34 Yuzu MD5 raw-name probe.
+                  //
+                  // GARbro's FilenameMap first maps the lower-cased UTF-16LE MD5
+                  // of a logical path back to the real filename.  For
+                  // "system/Initialize.tjs" that raw key is:
+                  //   3aad1fa7356e70bb9d78ea7159c7856b
+                  //
+                  // Probe that raw archive entry directly.  If it exists, let the
+                  // existing 2A.32 failure-stub bypass execute it.
+                  if(kiriPad2A32Chosen.IsEmpty()) {
+                      const tjs_char *kiriPad2A34Delim =
+                          TJS_strchr(place.c_str(), TVPArchiveDelimiter);
+                      if(kiriPad2A34Delim) {
+                          ttstr kiriPad2A34Archive(
+                              place.c_str(),
+                              static_cast<tjs_int>(
+                                  kiriPad2A34Delim - place.c_str()));
+
+                          ttstr kiriPad2A34Md5 =
+                              kiriPad2A34Archive +
+                              TJS_W(">3aad1fa7356e70bb9d78ea7159c7856b");
+
+                          TVPAddImportantLog(
+                              ttstr(TJS_W("(info) KiriPad 2A.34 raw MD5 candidate='")) +
+                              kiriPad2A34Md5 + TJS_W("'"));
+
+                          bool kiriPad2A34Exists = false;
+                          try {
+                              kiriPad2A34Exists =
+                                  TVPIsExistentStorageNoSearch(
+                                      kiriPad2A34Md5);
+                          } catch(...) {
+                              TVPAddImportantLog(
+                                  TJS_W("(info) KiriPad 2A.34 raw MD5 existence probe threw"));
+                          }
+
+                          TVPAddImportantLog(
+                              kiriPad2A34Exists
+                                  ? TJS_W("(info) KiriPad 2A.34 raw MD5 exists=YES")
+                                  : TJS_W("(info) KiriPad 2A.34 raw MD5 exists=NO"));
+
+                          if(kiriPad2A34Exists) {
+                              try {
+                                  std::unique_ptr<tTJSBinaryStream> kiriPad2A34Stream{
+                                      TVPCreateBinaryStreamForRead(
+                                          kiriPad2A34Md5, TJS_W(""))
+                                  };
+                                  if(kiriPad2A34Stream) {
+                                      const tjs_uint64 kiriPad2A34Size =
+                                          kiriPad2A34Stream->GetSize();
+
+                                      tjs_uint8 kiriPad2A34Head[8] = {};
+                                      const tjs_uint kiriPad2A34Want =
+                                          static_cast<tjs_uint>(
+                                              kiriPad2A34Size < 8
+                                                  ? kiriPad2A34Size : 8);
+
+                                      if(kiriPad2A34Want > 0) {
+                                          kiriPad2A34Stream->Seek(
+                                              0, TJS_BS_SEEK_SET);
+                                          kiriPad2A34Stream->Read(
+                                              kiriPad2A34Head,
+                                              kiriPad2A34Want);
+                                      }
+
+                                      char kiriPad2A34Hex[3 * 8 + 1] = {};
+                                      size_t kiriPad2A34Pos = 0;
+                                      for(tjs_uint i = 0;
+                                          i < kiriPad2A34Want; ++i) {
+                                          if(i != 0)
+                                              kiriPad2A34Hex[
+                                                  kiriPad2A34Pos++] = ' ';
+                                          std::snprintf(
+                                              kiriPad2A34Hex +
+                                                  kiriPad2A34Pos,
+                                              sizeof(kiriPad2A34Hex) -
+                                                  kiriPad2A34Pos,
+                                              "%02X",
+                                              static_cast<unsigned int>(
+                                                  kiriPad2A34Head[i]));
+                                          kiriPad2A34Pos += 2;
+                                      }
+
+                                      spdlog::info(
+                                          "KiriPad 2A.34 raw MD5 stream open=YES "
+                                          "size={} head8={}",
+                                          static_cast<unsigned long long>(
+                                              kiriPad2A34Size),
+                                          kiriPad2A34Hex);
+
+                                      kiriPad2A32Chosen = kiriPad2A34Md5;
+                                  }
+                              } catch(...) {
+                                  TVPAddImportantLog(
+                                      TJS_W("(info) KiriPad 2A.34 raw MD5 stream open=NO"));
+                              }
+                          }
+                      }
+                  }
+
+          '''
+
+          if text.count(anchor) != 1:
+              pos = text.find("KiriPad 2A.32 initialize candidate found=NO")
+              if pos >= 0:
+                  print("===== nearby ScriptMgnIntf.cpp =====")
+                  print(text[max(0, pos-1800):pos+2200])
+              raise SystemExit(
+                  f"Expected one 2A.32 candidate-result block after 2A.33, found "
+                  f"{text.count(anchor)}"
+              )
+
+          text = text.replace(anchor, block + anchor, 1)
+
+          first_include = text.find("#include")
+          if first_include < 0:
+              raise SystemExit("ScriptMgnIntf.cpp include insertion point not found")
+
+          for hdr in ("cstdio", "memory"):
+              inc = f"#include <{hdr}>\n"
+              if inc not in text:
+                  text = text[:first_include] + inc + text[first_include:]
+                  first_include += len(inc)
+
+          path.write_text(text, encoding="utf-8")
+
+          patched = path.read_text(encoding="utf-8")
+          required = (
+              "KiriPad 2A.34 Yuzu MD5 raw-name probe",
+              "3aad1fa7356e70bb9d78ea7159c7856b",
+              "KiriPad 2A.34 raw MD5 exists=",
+              "KiriPad 2A.34 raw MD5 stream open=YES",
+          )
+          for token in required:
+              if token not in patched:
+                  raise SystemExit(f"2A.34 verification failed: {token}")
+
+          print("Installed Phase 2A.34 Yuzu MD5 raw-name probe.")
+
+          PY
+
       - name: Configure and build upstream iOS engine only
         shell: bash
         run: |
@@ -2295,7 +2457,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A33b-runtime-unsigned-ipa
+          name: KiriPad-Phase2A34-runtime-unsigned-ipa
           path: artifacts/KiriPad-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
