@@ -1,4 +1,4 @@
-name: Build KiriPad Phase 2A.30 Protected Startup Fallback
+name: Build KiriPad Phase 2A.31 Initialize Case Fallback
 
 on:
   workflow_dispatch:
@@ -1315,7 +1315,7 @@ jobs:
           print(patched[max(0, p-1200):p+1800])
           PY
 
-      - name: Phase 2A.30 bypass known protected startup failure stub
+      - name: Phase 2A.31 fix Initialize.tjs case-sensitive fallback
         shell: bash
         run: |
           set -euo pipefail
@@ -1326,9 +1326,9 @@ jobs:
           path = Path("cpp/core/base/ScriptMgnIntf.cpp")
           text = path.read_text(encoding="utf-8")
 
-          marker = "KiriPad 2A.30 protected startup fallback"
+          marker = "KiriPad 2A.31 Initialize path probe"
           if marker in text:
-              raise SystemExit("Phase 2A.30 startup fallback already present unexpectedly")
+              raise SystemExit("Phase 2A.31 startup fallback already present unexpectedly")
 
           old = '''        TVPStartupSuccess = false;
                   try {
@@ -1345,89 +1345,99 @@ jobs:
 
           new = r'''        TVPStartupSuccess = false;
 
-                  // KiriPad 2A.30 protected startup fallback:
-                  // Sanoba Witch ships a 316-byte TJS2100 startup.tjs whose complete
-                  // behavior is to call System.inform("startup failed: corrupted execution file").
-                  // KrKr2-Next already has an Initialize.tjs compatibility fallback, but its
-                  // permissive text probe can allow this bytecode stub to reach LoadByteCode.
-                  // Detect only this known stub and intentionally leave TVPStartupSuccess false
-                  // so the existing fallback below executes system/Initialize.tjs.
-                  const bool kiriPad2A30HasInitialize =
+                  // KiriPad 2A.31 Initialize path probe:
+                  // Kirikiroid2 uses "System/Initialize.tjs" (capital S), while
+                  // this KrKr2-Next revision uses "system/Initialize.tjs".
+                  const bool kiriPad2A31InitLower =
                       TVPIsExistentStorage(TJS_W("system/Initialize.tjs"));
-                  bool kiriPad2A30FailureStub = false;
+                  const bool kiriPad2A31InitUpper =
+                      TVPIsExistentStorage(TJS_W("System/Initialize.tjs"));
 
-                  if(kiriPad2A30HasInitialize) {
-                      try {
-                          std::unique_ptr<tTJSBinaryStream> kiriPad2A30Stream{
-                              TVPCreateBinaryStreamForRead(place, TJS_W(""))
-                          };
+                  TVPAddImportantLog(
+                      kiriPad2A31InitLower
+                          ? TJS_W("(info) KiriPad 2A.31 init lower-case path exists=YES")
+                          : TJS_W("(info) KiriPad 2A.31 init lower-case path exists=NO"));
+                  TVPAddImportantLog(
+                      kiriPad2A31InitUpper
+                          ? TJS_W("(info) KiriPad 2A.31 init Kirikiroid2-case path exists=YES")
+                          : TJS_W("(info) KiriPad 2A.31 init Kirikiroid2-case path exists=NO"));
 
-                          if(kiriPad2A30Stream && kiriPad2A30Stream->GetSize() == 316) {
-                              std::vector<tjs_uint8> kiriPad2A30Raw(316);
-                              kiriPad2A30Stream->Seek(0, TJS_BS_SEEK_SET);
-                              kiriPad2A30Stream->Read(
-                                  kiriPad2A30Raw.data(),
-                                  static_cast<tjs_uint>(kiriPad2A30Raw.size()));
+                  bool kiriPad2A31FailureStub = false;
+                  try {
+                      std::unique_ptr<tTJSBinaryStream> kiriPad2A31Stream{
+                          TVPCreateBinaryStreamForRead(place, TJS_W(""))
+                      };
 
-                              const bool kiriPad2A30Magic =
-                                  kiriPad2A30Raw.size() >= 8 &&
-                                  kiriPad2A30Raw[0] == static_cast<tjs_uint8>('T') &&
-                                  kiriPad2A30Raw[1] == static_cast<tjs_uint8>('J') &&
-                                  kiriPad2A30Raw[2] == static_cast<tjs_uint8>('S') &&
-                                  kiriPad2A30Raw[3] == static_cast<tjs_uint8>('2') &&
-                                  kiriPad2A30Raw[4] == static_cast<tjs_uint8>('1') &&
-                                  kiriPad2A30Raw[5] == static_cast<tjs_uint8>('0') &&
-                                  kiriPad2A30Raw[6] == static_cast<tjs_uint8>('0') &&
-                                  kiriPad2A30Raw[7] == 0;
+                      if(kiriPad2A31Stream && kiriPad2A31Stream->GetSize() == 316) {
+                          std::vector<tjs_uint8> kiriPad2A31Raw(316);
+                          kiriPad2A31Stream->Seek(0, TJS_BS_SEEK_SET);
+                          kiriPad2A31Stream->Read(
+                              kiriPad2A31Raw.data(),
+                              static_cast<tjs_uint>(kiriPad2A31Raw.size()));
 
-                              auto kiriPad2A30HasUtf16LE =
-                                  [&](const char *literal) -> bool {
-                                      const std::string key(literal);
-                                      const size_t bytes = key.size() * 2;
-                                      if(key.empty() || bytes > kiriPad2A30Raw.size())
-                                          return false;
+                          const bool kiriPad2A31Magic =
+                              kiriPad2A31Raw.size() >= 8 &&
+                              kiriPad2A31Raw[0] == static_cast<tjs_uint8>('T') &&
+                              kiriPad2A31Raw[1] == static_cast<tjs_uint8>('J') &&
+                              kiriPad2A31Raw[2] == static_cast<tjs_uint8>('S') &&
+                              kiriPad2A31Raw[3] == static_cast<tjs_uint8>('2') &&
+                              kiriPad2A31Raw[4] == static_cast<tjs_uint8>('1') &&
+                              kiriPad2A31Raw[5] == static_cast<tjs_uint8>('0') &&
+                              kiriPad2A31Raw[6] == static_cast<tjs_uint8>('0') &&
+                              kiriPad2A31Raw[7] == 0;
 
-                                      for(size_t i = 0;
-                                          i + bytes <= kiriPad2A30Raw.size(); ++i) {
-                                          bool match = true;
-                                          for(size_t j = 0; j < key.size(); ++j) {
-                                              if(kiriPad2A30Raw[i + j * 2] !=
-                                                     static_cast<tjs_uint8>(
-                                                         static_cast<unsigned char>(key[j])) ||
-                                                 kiriPad2A30Raw[i + j * 2 + 1] != 0) {
-                                                  match = false;
-                                                  break;
-                                              }
-                                          }
-                                          if(match)
-                                              return true;
-                                      }
+                          auto kiriPad2A31HasUtf16LE =
+                              [&](const char *literal) -> bool {
+                                  const std::string key(literal);
+                                  const size_t bytes = key.size() * 2;
+                                  if(key.empty() || bytes > kiriPad2A31Raw.size())
                                       return false;
-                                  };
+                                  for(size_t i = 0; i + bytes <= kiriPad2A31Raw.size(); ++i) {
+                                      bool match = true;
+                                      for(size_t j = 0; j < key.size(); ++j) {
+                                          if(kiriPad2A31Raw[i + j * 2] !=
+                                                 static_cast<tjs_uint8>(static_cast<unsigned char>(key[j])) ||
+                                             kiriPad2A31Raw[i + j * 2 + 1] != 0) {
+                                              match = false;
+                                              break;
+                                          }
+                                      }
+                                      if(match) return true;
+                                  }
+                                  return false;
+                              };
 
-                              kiriPad2A30FailureStub =
-                                  kiriPad2A30Magic &&
-                                  kiriPad2A30HasUtf16LE(
-                                      "startup failed: corrupted execution file") &&
-                                  kiriPad2A30HasUtf16LE("System") &&
-                                  kiriPad2A30HasUtf16LE("inform");
-                          }
-                      } catch(...) {
-                          // A diagnostic probe must never break ordinary startup.
-                          spdlog::warn(
-                              "[KiriPad 2A.30] startup compatibility probe failed; "
-                              "continuing normal startup path");
+                          kiriPad2A31FailureStub =
+                              kiriPad2A31Magic &&
+                              kiriPad2A31HasUtf16LE("startup failed: corrupted execution file") &&
+                              kiriPad2A31HasUtf16LE("System") &&
+                              kiriPad2A31HasUtf16LE("inform");
                       }
+                  } catch(...) {
+                      spdlog::warn(
+                          "[KiriPad 2A.31] startup compatibility probe failed; "
+                          "continuing normal startup path");
                   }
 
-                  if(kiriPad2A30FailureStub) {
-                      spdlog::warn(
-                          "[KiriPad 2A.30] known protected startup failure stub detected; "
-                          "using system/Initialize.tjs fallback");
+                  TVPAddImportantLog(
+                      kiriPad2A31FailureStub
+                          ? TJS_W("(info) KiriPad 2A.31 protected startup stub detected=YES")
+                          : TJS_W("(info) KiriPad 2A.31 protected startup stub detected=NO"));
+
+                  if(kiriPad2A31FailureStub &&
+                     (kiriPad2A31InitUpper || kiriPad2A31InitLower)) {
+                      const tjs_char *kiriPad2A31InitPath =
+                          kiriPad2A31InitUpper
+                              ? TJS_W("System/Initialize.tjs")
+                              : TJS_W("system/Initialize.tjs");
+
                       TVPAddImportantLog(
-                          TJS_W("(info) KiriPad 2A.30 protected startup fallback -> system/Initialize.tjs"));
-                      // Deliberately do not execute startup.tjs here.
-                      // TVPStartupSuccess remains false and the existing fallback block runs.
+                          kiriPad2A31InitUpper
+                              ? TJS_W("(info) KiriPad 2A.31 fallback -> System/Initialize.tjs")
+                              : TJS_W("(info) KiriPad 2A.31 fallback -> system/Initialize.tjs"));
+
+                      TVPExecuteStorage(kiriPad2A31InitPath);
+                      TVPStartupSuccess = true;
                   } else {
                       try {
                           iTJSTextReadStream *stream =
@@ -1436,7 +1446,7 @@ jobs:
                           TVPExecuteStorage(TVPStartupScriptName);
                           TVPStartupSuccess = true;
                       } catch(...) {
-                          if(!kiriPad2A30HasInitialize) {
+                          if(!kiriPad2A31InitUpper && !kiriPad2A31InitLower) {
                               throw;
                           }
                       }
@@ -1449,27 +1459,63 @@ jobs:
               pos = text.find("TVPStartupSuccess = false;")
               if pos >= 0:
                   print("===== nearby TVPExecuteStartupScript source =====")
-                  print(text[max(0, pos-1200):pos+2600])
+                  print(text[max(0, pos-1200):pos+3200])
               raise SystemExit(1)
 
           text = text.replace(old, new, 1)
+
+          old_fallback = '''        if(!TVPStartupSuccess) {
+                  // try direct execute initialize.tjs to compatible for
+                  // some patch
+          #if defined(__ANDROID__)
+                  __android_log_print(ANDROID_LOG_INFO, "krkr2",
+                                      "Fallback startup script: system/Initialize.tjs");
+          #endif
+                  TVPExecuteStorage(TJS_W("system/Initialize.tjs"));
+                  TVPStartupSuccess = true;
+              }
+          '''
+          new_fallback = r'''        if(!TVPStartupSuccess) {
+                  // KiriPad 2A.31: prefer Kirikiroid2's canonical capital-S path.
+                  if(TVPIsExistentStorage(TJS_W("System/Initialize.tjs"))) {
+                      TVPAddImportantLog(
+                          TJS_W("(info) KiriPad 2A.31 final fallback -> System/Initialize.tjs"));
+                      TVPExecuteStorage(TJS_W("System/Initialize.tjs"));
+                  } else {
+                      TVPAddImportantLog(
+                          TJS_W("(info) KiriPad 2A.31 final fallback -> system/Initialize.tjs"));
+                      TVPExecuteStorage(TJS_W("system/Initialize.tjs"));
+                  }
+                  TVPStartupSuccess = true;
+              }
+          '''
+          if text.count(old_fallback) != 1:
+              print(f"Expected exactly one final startup fallback block, found {text.count(old_fallback)}.")
+              pos = text.find("if(!TVPStartupSuccess)")
+              if pos >= 0:
+                  print(text[max(0, pos-500):pos+1500])
+              raise SystemExit(1)
+
+          text = text.replace(old_fallback, new_fallback, 1)
           path.write_text(text, encoding="utf-8")
 
           patched = path.read_text(encoding="utf-8")
           required = (
-              "KiriPad 2A.30 protected startup fallback",
-              "kiriPad2A30FailureStub",
-              "startup failed: corrupted execution file",
-              "protected startup fallback -> system/Initialize.tjs",
+              "KiriPad 2A.31 Initialize path probe",
+              "init lower-case path exists=",
+              "init Kirikiroid2-case path exists=",
+              "protected startup stub detected=",
+              "fallback -> System/Initialize.tjs",
+              'TJS_W("System/Initialize.tjs")',
           )
           for token in required:
               if token not in patched:
-                  raise SystemExit(f"Phase 2A.30 verification failed: {token}")
+                  raise SystemExit(f"Phase 2A.31 verification failed: {token}")
 
-          p = patched.index("KiriPad 2A.30 protected startup fallback")
-          print("Installed Phase 2A.30 protected-startup fallback.")
+          p = patched.index("KiriPad 2A.31 Initialize path probe")
+          print("Installed Phase 2A.31 case-sensitive Initialize.tjs fallback.")
           print("===== patched TVPExecuteStartupScript window =====")
-          print(patched[max(0, p-1000):p+6200])
+          print(patched[max(0, p-1200):p+8200])
           PY
 
       - name: Configure and build upstream iOS engine only
@@ -2097,7 +2143,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A30-runtime-build-logs
+          name: KiriPad-Phase2A31-runtime-build-logs
           path: artifacts/runtime-build-logs
           if-no-files-found: warn
           retention-days: 14
@@ -2106,7 +2152,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A30-runtime-unsigned-ipa
+          name: KiriPad-Phase2A31-runtime-unsigned-ipa
           path: artifacts/KiriPad-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
@@ -2115,7 +2161,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A30-runtime-source-info
+          name: KiriPad-Phase2A31-runtime-source-info
           path: artifacts/runtime-source-info
           if-no-files-found: warn
           retention-days: 14
