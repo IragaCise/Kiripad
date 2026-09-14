@@ -1,4 +1,4 @@
-name: Build KiriPad Phase 2A.40 HistoryLayer Config Member Compat
+name: Build KiriPad Phase 2A.40b HistoryLayer Config Member Compat
 
 on:
   workflow_dispatch:
@@ -675,6 +675,26 @@ jobs:
           open_brace = text.find("{", sig.end())
           if open_brace < 0:
               raise SystemExit("TVPExecuteStorage(context) opening brace not found")
+
+          # Phase 2A.40b: find the matching closing brace of this exact
+          # TVPExecuteStorage overload before inserting the HistoryLayer
+          # compatibility block.
+          depth = 0
+          close_brace = None
+          for i in range(open_brace, len(text)):
+              ch = text[i]
+              if ch == "{":
+                  depth += 1
+              elif ch == "}":
+                  depth -= 1
+                  if depth == 0:
+                      close_brace = i
+                      break
+
+          if close_brace is None:
+              raise SystemExit(
+                  "2A.40b: TVPExecuteStorage(context) closing brace not found"
+              )
 
           marker = 'KiriPad 2A.19.3 TVPExecuteStorage: '
           if marker in text:
@@ -1465,7 +1485,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A40-runtime-unsigned-ipa
+          name: KiriPad-Phase2A40b-runtime-unsigned-ipa
           path: artifacts/KiriPad-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
