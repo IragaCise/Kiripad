@@ -1,4 +1,4 @@
-name: Build KiriPad Phase 2A.31 Initialize Case Fallback
+name: Build KiriPad Phase 2A.31b Initialize Case Fallback
 
 on:
   workflow_dispatch:
@@ -1315,7 +1315,7 @@ jobs:
           print(patched[max(0, p-1200):p+1800])
           PY
 
-      - name: Phase 2A.31 fix Initialize.tjs case-sensitive fallback
+      - name: Phase 2A.31b fix Initialize.tjs case-sensitive fallback
         shell: bash
         run: |
           set -euo pipefail
@@ -1464,39 +1464,12 @@ jobs:
 
           text = text.replace(old, new, 1)
 
-          old_fallback = '''        if(!TVPStartupSuccess) {
-                  // try direct execute initialize.tjs to compatible for
-                  // some patch
-          #if defined(__ANDROID__)
-                  __android_log_print(ANDROID_LOG_INFO, "krkr2",
-                                      "Fallback startup script: system/Initialize.tjs");
-          #endif
-                  TVPExecuteStorage(TJS_W("system/Initialize.tjs"));
-                  TVPStartupSuccess = true;
-              }
-          '''
-          new_fallback = r'''        if(!TVPStartupSuccess) {
-                  // KiriPad 2A.31: prefer Kirikiroid2's canonical capital-S path.
-                  if(TVPIsExistentStorage(TJS_W("System/Initialize.tjs"))) {
-                      TVPAddImportantLog(
-                          TJS_W("(info) KiriPad 2A.31 final fallback -> System/Initialize.tjs"));
-                      TVPExecuteStorage(TJS_W("System/Initialize.tjs"));
-                  } else {
-                      TVPAddImportantLog(
-                          TJS_W("(info) KiriPad 2A.31 final fallback -> system/Initialize.tjs"));
-                      TVPExecuteStorage(TJS_W("system/Initialize.tjs"));
-                  }
-                  TVPStartupSuccess = true;
-              }
-          '''
-          if text.count(old_fallback) != 1:
-              print(f"Expected exactly one final startup fallback block, found {text.count(old_fallback)}.")
-              pos = text.find("if(!TVPStartupSuccess)")
-              if pos >= 0:
-                  print(text[max(0, pos-500):pos+1500])
-              raise SystemExit(1)
-
-          text = text.replace(old_fallback, new_fallback, 1)
+          # Phase 2A.31b:
+          # Do not rewrite KrKr2-Next's later generic fallback here.
+          # The protected 316-byte startup stub is already handled above by
+          # directly executing whichever Initialize.tjs path actually exists.
+          # Leaving the upstream fallback untouched avoids fragile whitespace-
+          # dependent matching and is sufficient for this diagnostic phase.
           path.write_text(text, encoding="utf-8")
 
           patched = path.read_text(encoding="utf-8")
@@ -1513,7 +1486,7 @@ jobs:
                   raise SystemExit(f"Phase 2A.31 verification failed: {token}")
 
           p = patched.index("KiriPad 2A.31 Initialize path probe")
-          print("Installed Phase 2A.31 case-sensitive Initialize.tjs fallback.")
+          print("Installed Phase 2A.31b case-sensitive Initialize.tjs fallback.")
           print("===== patched TVPExecuteStartupScript window =====")
           print(patched[max(0, p-1200):p+8200])
           PY
@@ -2143,7 +2116,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A31-runtime-build-logs
+          name: KiriPad-Phase2A31b-runtime-build-logs
           path: artifacts/runtime-build-logs
           if-no-files-found: warn
           retention-days: 14
@@ -2152,7 +2125,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A31-runtime-unsigned-ipa
+          name: KiriPad-Phase2A31b-runtime-unsigned-ipa
           path: artifacts/KiriPad-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
@@ -2161,7 +2134,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A31-runtime-source-info
+          name: KiriPad-Phase2A31b-runtime-source-info
           path: artifacts/runtime-source-info
           if-no-files-found: warn
           retention-days: 14
