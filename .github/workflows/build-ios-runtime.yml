@@ -1,4 +1,4 @@
-name: Build KiriPad Phase 2A.47 Native Yuzu Filename Restore
+name: Build KiriPad Phase 2A.48 Frame Pixel Probe
 
 on:
   workflow_dispatch:
@@ -3471,6 +3471,142 @@ jobs:
             exit 1
           fi
 
+      - name: Phase 2A.48 add RGBA frame pixel diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("App/EngineRuntimeHost.mm")
+          text = path.read_text(encoding="utf-8")
+
+          marker = "KiriPad 2A.48 frame pixel probe"
+          if marker in text:
+              raise SystemExit("2A.48 marker already present unexpectedly")
+
+          anchor = (
+              "    ++_framesDelivered;\n\n"
+              "    const uint32_t width = desc.width;\n"
+              "    const uint32_t height = desc.height;\n"
+              "    const uint32_t stride = desc.stride_bytes;\n"
+          )
+          if text.count(anchor) != 1:
+              raise SystemExit(f"2A.48 host anchor count={text.count(anchor)}")
+
+          replacement = r"""    ++_framesDelivered;
+
+              const uint32_t width = desc.width;
+              const uint32_t height = desc.height;
+              const uint32_t stride = desc.stride_bytes;
+
+              // KiriPad 2A.48 frame pixel probe
+              // Sample raw RGBA before CoreGraphics conversion.
+              if (_framesDelivered <= 5 || (_framesDelivered % 120) == 0) {
+                  const uint32_t stepX = std::max<uint32_t>(1u, width / 80u);
+                  const uint32_t stepY = std::max<uint32_t>(1u, height / 45u);
+
+                  uint64_t sampleCount = 0;
+                  uint64_t sumR = 0, sumG = 0, sumB = 0, sumA = 0;
+                  uint64_t nonBlack = 0, alphaZero = 0, alphaFull = 0;
+                  uint8_t minR = 255, minG = 255, minB = 255, minA = 255;
+                  uint8_t maxR = 0, maxG = 0, maxB = 0, maxA = 0;
+                  uint64_t sampleHash = 1469598103934665603ull;
+
+                  for (uint32_t y = 0; y < height; y += stepY) {
+                      const uint8_t *row =
+                          storage.data() + static_cast<size_t>(y) * stride;
+                      for (uint32_t x = 0; x < width; x += stepX) {
+                          const uint8_t *p = row + static_cast<size_t>(x) * 4u;
+                          const uint8_t r = p[0];
+                          const uint8_t g = p[1];
+                          const uint8_t b = p[2];
+                          const uint8_t a = p[3];
+
+                          ++sampleCount;
+                          sumR += r; sumG += g; sumB += b; sumA += a;
+                          minR = std::min(minR, r); maxR = std::max(maxR, r);
+                          minG = std::min(minG, g); maxG = std::max(maxG, g);
+                          minB = std::min(minB, b); maxB = std::max(maxB, b);
+                          minA = std::min(minA, a); maxA = std::max(maxA, a);
+
+                          if (r > 8 || g > 8 || b > 8) ++nonBlack;
+                          if (a == 0) ++alphaZero;
+                          if (a == 255) ++alphaFull;
+
+                          sampleHash ^= r; sampleHash *= 1099511628211ull;
+                          sampleHash ^= g; sampleHash *= 1099511628211ull;
+                          sampleHash ^= b; sampleHash *= 1099511628211ull;
+                          sampleHash ^= a; sampleHash *= 1099511628211ull;
+                      }
+                  }
+
+                  if (sampleCount > 0) {
+                      const double inv = 1.0 / static_cast<double>(sampleCount);
+                      const double avgR = static_cast<double>(sumR) * inv;
+                      const double avgG = static_cast<double>(sumG) * inv;
+                      const double avgB = static_cast<double>(sumB) * inv;
+                      const double avgA = static_cast<double>(sumA) * inv;
+                      const double nonBlackPct =
+                          100.0 * static_cast<double>(nonBlack) * inv;
+                      const double alphaZeroPct =
+                          100.0 * static_cast<double>(alphaZero) * inv;
+                      const double alphaFullPct =
+                          100.0 * static_cast<double>(alphaFull) * inv;
+
+                      const uint8_t *p0 = storage.data();
+                      const uint32_t cx = width / 2u;
+                      const uint32_t cy = height / 2u;
+                      const uint8_t *pc =
+                          storage.data() +
+                          static_cast<size_t>(cy) * stride +
+                          static_cast<size_t>(cx) * 4u;
+
+                      [self notifyLog:[NSString stringWithFormat:
+                          @"[Phase2A.48] frame pixels #%llu serial=%llu "
+                           "avgRGBA=%.1f,%.1f,%.1f,%.1f "
+                           "minRGBA=%u,%u,%u,%u maxRGBA=%u,%u,%u,%u "
+                           "nonBlack=%.1f%% alpha0=%.1f%% alpha255=%.1f%% "
+                           "p0=%u,%u,%u,%u center=%u,%u,%u,%u "
+                           "sampleHash=%016llx\n",
+                          (unsigned long long)_framesDelivered,
+                          (unsigned long long)desc.frame_serial,
+                          avgR, avgG, avgB, avgA,
+                          (unsigned)minR, (unsigned)minG,
+                          (unsigned)minB, (unsigned)minA,
+                          (unsigned)maxR, (unsigned)maxG,
+                          (unsigned)maxB, (unsigned)maxA,
+                          nonBlackPct, alphaZeroPct, alphaFullPct,
+                          (unsigned)p0[0], (unsigned)p0[1],
+                          (unsigned)p0[2], (unsigned)p0[3],
+                          (unsigned)pc[0], (unsigned)pc[1],
+                          (unsigned)pc[2], (unsigned)pc[3],
+                          (unsigned long long)sampleHash]];
+                  }
+              }
+          """
+
+          text = text.replace(anchor, replacement, 1)
+          path.write_text(text, encoding="utf-8")
+
+          patched = path.read_text(encoding="utf-8")
+          required = (
+              "KiriPad 2A.48 frame pixel probe",
+              "[Phase2A.48] frame pixels",
+              "avgRGBA=",
+              "nonBlack=",
+              "alpha0=",
+              "alpha255=",
+              "sampleHash=",
+          )
+          for token in required:
+              if token not in patched:
+                  raise SystemExit(f"2A.48 verification failed: {token}")
+
+          print("Installed Phase 2A.48 raw RGBA frame pixel diagnostics.")
+
+          PY
+
       - name: Build KiriPad with runtime linked
         shell: bash
         env:
@@ -3507,6 +3643,23 @@ jobs:
           fi
           echo "Phase 2A.14 host + patched-engine markers confirmed in built executable."
 
+      - name: Verify Phase 2A.48 pixel-probe marker in app binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_BIN="$(find build-ios-ci -type f -path '*/Release-iphoneos/*.app/KiriPad' -print -quit)"
+          if [[ -z "$APP_BIN" || ! -f "$APP_BIN" ]]; then
+            echo "Could not locate built KiriPad executable"
+            exit 1
+          fi
+          STRINGS_DUMP="$RUNNER_TEMP/kiripad-2A48-strings.txt"
+          strings "$APP_BIN" > "$STRINGS_DUMP"
+          if ! grep -Fq "[Phase2A.48] frame pixels" "$STRINGS_DUMP"; then
+            echo "ERROR: Phase 2A.48 pixel-probe marker missing from built app"
+            exit 1
+          fi
+          echo "Phase 2A.48 pixel-probe marker confirmed in built app."
+
       - name: Collect source metadata
         if: always()
         shell: bash
@@ -3530,7 +3683,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A47-runtime-unsigned-ipa
+          name: KiriPad-Phase2A48-runtime-unsigned-ipa
           path: artifacts/KiriPad-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
