@@ -1,4 +1,4 @@
-name: Build KiriPad Phase 2A.45 Cross-Archive BaseStage
+name: Build KiriPad Phase 2A.45b SearchPlacedPath BaseStage
 
 on:
   workflow_dispatch:
@@ -3168,7 +3168,7 @@ jobs:
             exit 1
           fi
 
-      - name: Phase 2A.45 resolve base.stage from bgimage.xp3
+      - name: Phase 2A.45b resolve base.stage in TVPSearchPlacedPath
         shell: bash
         run: |
           set -euo pipefail
@@ -3177,159 +3177,109 @@ jobs:
           from pathlib import Path
           import re
 
-          path = Path("cpp/core/base/ScriptMgnIntf.cpp")
-          text = path.read_text(encoding="utf-8")
+          marker = "KiriPad 2A.45b SearchPlacedPath base.stage"
+          target_path = None
+          target_text = None
+          sig_match = None
 
-          marker = "KiriPad 2A.45 cross-archive base.stage alias"
-          if marker in text:
-              raise SystemExit("2A.45 marker already present unexpectedly")
+          for p in Path("cpp").rglob("*.cpp"):
+              try:
+                  body = p.read_text(encoding="utf-8")
+              except Exception:
+                  continue
 
-          sig = re.search(
-              r'void\s+TVPExecuteStorage\s*\(\s*const\s+ttstr\s*&\s*name\s*,\s*'
-              r'iTJSDispatch2\s*\*\s*context\s*,\s*tTJSVariant\s*\*\s*result\s*,\s*'
-              r'bool\s+isexpression\s*,\s*const\s+tjs_char\s*\*\s*modestr\s*\)',
-              text,
-              re.S,
-          )
-          if not sig:
-              raise SystemExit("2A.45: context TVPExecuteStorage signature not found")
-
-          open_brace = text.find("{", sig.end())
-          if open_brace < 0:
-              raise SystemExit("2A.45: opening brace not found")
-
-          depth = 0
-          close_brace = None
-          for i in range(open_brace, len(text)):
-              ch = text[i]
-              if ch == "{":
-                  depth += 1
-              elif ch == "}":
-                  depth -= 1
-                  if depth == 0:
-                      close_brace = i
-                      break
-
-          if close_brace is None:
-              raise SystemExit("2A.45: closing brace not found")
-
-          func = text[open_brace:close_brace + 1]
-
-          search_call = "TVPSearchPlacedPath(name)"
-          search_count = func.count(search_call)
-          if search_count != 2:
-              print("===== TVPExecuteStorage =====")
-              print(func)
-              raise SystemExit(
-                  f"2A.45: expected two TVPSearchPlacedPath(name) calls, "
-                  f"found {search_count}"
+              m = re.search(
+                  r'\bttstr\s+TVPSearchPlacedPath\s*\(\s*'
+                  r'const\s+ttstr\s*&\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)',
+                  body,
+                  re.S,
               )
+              if m:
+                  if target_path is not None:
+                      raise SystemExit(
+                          f"2A.45b: multiple TVPSearchPlacedPath definitions: "
+                          f"{target_path} and {p}"
+                      )
+                  target_path = p
+                  target_text = body
+                  sig_match = m
 
-          inject = r'''
-              // KiriPad 2A.45 cross-archive base.stage alias.
-              //
-              // GARbro shows base.stage at the ROOT of bgimage.xp3.
-              // Keep the logical basename, but route lookup into bgimage.xp3.
-              // The existing tTVPArchive YUZUSOFT alias then maps
-              // "base.stage" to its protected MD5 entry.
-              ttstr kiriPad2A45StorageName(name);
+          if target_path is None:
+              raise SystemExit("2A.45b: TVPSearchPlacedPath definition not found")
 
+          if marker in target_text:
+              raise SystemExit("2A.45b marker already present unexpectedly")
+
+          param_name = sig_match.group(1)
+          open_brace = target_text.find("{", sig_match.end())
+          if open_brace < 0:
+              raise SystemExit("2A.45b: function opening brace not found")
+
+          inject = f'''
+              // {marker}
           #if defined(__APPLE__)
-              if(name == TJS_W("base.stage")) {
-                  try {
-                      const ttstr kiriPad2A45Archive =
-                          TVPGetPlacedPath(TJS_W("bgimage.xp3"));
+              if({param_name} == TJS_W("base.stage")) {{
+                  const ttstr kiriPad2A45bCandidate =
+                      TVPGetAppPath() + TJS_W("bgimage.xp3>base.stage");
 
-                      if(kiriPad2A45Archive.IsEmpty()) {
-                          TVPAddImportantLog(
-                              TJS_W("(info) KiriPad 2A.45 bgimage.xp3 placed path=NO"));
-                      } else {
-                          TVPAddImportantLog(
-                              ttstr(TJS_W("(info) KiriPad 2A.45 bgimage.xp3 placed path='")) +
-                              kiriPad2A45Archive + TJS_W("'"));
+                  bool kiriPad2A45bExists = false;
+                  try {{
+                      kiriPad2A45bExists =
+                          TVPIsExistentStorageNoSearch(kiriPad2A45bCandidate);
+                  }} catch(...) {{
+                      kiriPad2A45bExists = false;
+                  }}
 
-                          const ttstr kiriPad2A45Candidate =
-                              kiriPad2A45Archive + TJS_W(">base.stage");
+                  TVPAddImportantLog(
+                      ttstr(TJS_W("(info) KiriPad 2A.45b base.stage candidate='")) +
+                      kiriPad2A45bCandidate +
+                      (kiriPad2A45bExists
+                          ? TJS_W("' exists=YES")
+                          : TJS_W("' exists=NO")));
 
-                          bool kiriPad2A45Exists = false;
-                          try {
-                              kiriPad2A45Exists =
-                                  TVPIsExistentStorageNoSearch(
-                                      kiriPad2A45Candidate);
-                          } catch(...) {
-                              kiriPad2A45Exists = false;
-                          }
-
-                          TVPAddImportantLog(
-                              kiriPad2A45Exists
-                                  ? TJS_W("(info) KiriPad 2A.45 bgimage.xp3>base.stage exists=YES")
-                                  : TJS_W("(info) KiriPad 2A.45 bgimage.xp3>base.stage exists=NO"));
-
-                          if(kiriPad2A45Exists) {
-                              kiriPad2A45StorageName =
-                                  kiriPad2A45Candidate;
-                              TVPAddImportantLog(
-                                  TJS_W("(info) KiriPad 2A.45 base.stage redirected to bgimage.xp3"));
-                          }
-                      }
-                  } catch(...) {
+                  if(kiriPad2A45bExists) {{
                       TVPAddImportantLog(
-                          TJS_W("(info) KiriPad 2A.45 bgimage.xp3 resolution threw"));
-                  }
-              }
+                          TJS_W("(info) KiriPad 2A.45b base.stage resolved from bgimage.xp3"));
+                      return kiriPad2A45bCandidate;
+                  }}
+              }}
           #endif
           '''
 
-          func = func[:1] + inject + func[1:]
-          func = func.replace(
-              search_call,
-              "TVPSearchPlacedPath(kiriPad2A45StorageName)"
+          patched = (
+              target_text[:open_brace + 1]
+              + inject
+              + target_text[open_brace + 1:]
           )
+          target_path.write_text(patched, encoding="utf-8")
 
-          text = text[:open_brace] + func + text[close_brace + 1:]
-          path.write_text(text, encoding="utf-8")
-
-          patched = path.read_text(encoding="utf-8")
+          verify = target_path.read_text(encoding="utf-8")
           required = (
-              "KiriPad 2A.45 cross-archive base.stage alias",
-              'TVPGetPlacedPath(TJS_W("bgimage.xp3"))',
-              'TJS_W(">base.stage")',
-              "TVPIsExistentStorageNoSearch",
-              "TVPSearchPlacedPath(kiriPad2A45StorageName)",
-              "base.stage redirected to bgimage.xp3",
+              marker,
+              'TJS_W("base.stage")',
+              'TJS_W("bgimage.xp3>base.stage")',
+              "TVPGetAppPath()",
+              "TVPIsExistentStorageNoSearch(kiriPad2A45bCandidate)",
+              "base.stage resolved from bgimage.xp3",
+              "return kiriPad2A45bCandidate;",
           )
           for token in required:
-              if token not in patched:
-                  raise SystemExit(f"2A.45 verification failed: {token}")
+              if token not in verify:
+                  raise SystemExit(f"2A.45b verification failed: {token}")
 
-          sig2 = re.search(
-              r'void\s+TVPExecuteStorage\s*\(\s*const\s+ttstr\s*&\s*name\s*,\s*'
-              r'iTJSDispatch2\s*\*\s*context\s*,\s*tTJSVariant\s*\*\s*result\s*,\s*'
-              r'bool\s+isexpression\s*,\s*const\s+tjs_char\s*\*\s*modestr\s*\)',
-              patched,
-              re.S,
-          )
-          ob = patched.find("{", sig2.end())
-          depth = 0
-          cb = None
-          for i in range(ob, len(patched)):
-              if patched[i] == "{":
-                  depth += 1
-              elif patched[i] == "}":
-                  depth -= 1
-                  if depth == 0:
-                      cb = i
-                      break
+          pos = verify.index(marker)
+          line_no = verify[:pos].count("\n") + 1
+          lines = verify.splitlines()
+          lo = max(0, line_no - 8)
+          hi = min(len(lines), line_no + 45)
 
-          final_func = patched[ob:cb + 1]
-          if "TVPSearchPlacedPath(name)" in final_func:
-              raise SystemExit("2A.45: old direct name lookup still remains")
-
-          print("Installed Phase 2A.45 cross-archive base.stage alias.")
-          print("Expected protected basename MD5: c7333ba1f8a6800780996de1e85c747a")
-          print("===== 2A.45 patched TVPExecuteStorage head =====")
-          print(final_func[:5000])
-          print("===== end 2A.45 window =====")
+          print(f"Patched: {target_path}")
+          print(f"TVPSearchPlacedPath parameter: {param_name}")
+          print("Expected base.stage UTF-16LE MD5: c7333ba1f8a6800780996de1e85c747a")
+          print("===== 2A.45b source window =====")
+          for n in range(lo, hi):
+              print(f"{n+1:5d}: {lines[n]}")
+          print("===== end 2A.45b window =====")
           PY
 
       - name: Build KiriPad with runtime linked
@@ -3391,7 +3341,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A45-runtime-unsigned-ipa
+          name: KiriPad-Phase2A45b-runtime-unsigned-ipa
           path: artifacts/KiriPad-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
