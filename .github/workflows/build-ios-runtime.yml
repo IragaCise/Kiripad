@@ -1,4 +1,4 @@
-name: Build KiriPad Phase 2A.33 XP3 Initialize Index Probe
+name: Build KiriPad Phase 2A.33b XP3 Initialize Index Probe
 
 on:
   workflow_dispatch:
@@ -1461,7 +1461,7 @@ jobs:
           print(patched[max(0, p-1000):p+11000])
           PY
 
-      - name: Phase 2A.33 dump XP3 Initialize index and probe startup archive path
+      - name: Phase 2A.33b dump XP3 Initialize index and probe startup archive path
         shell: bash
         run: |
           set -euo pipefail
@@ -1486,6 +1486,21 @@ jobs:
 
           if storage_path is None:
               raise SystemExit("Could not locate StorageIntf implementation for 2A.33")
+
+          # Phase 2A.33b:
+          # StorageIntf.cpp does not include spdlog directly in the pinned
+          # KrKr2-Next source.  The 2A.33 diagnostic uses spdlog::info(), so
+          # make the dependency explicit before injecting the probe.
+          spdlog_include = '#include <spdlog/spdlog.h>\n'
+          if spdlog_include not in storage_text:
+              first_include = storage_text.find("#include")
+              if first_include < 0:
+                  raise SystemExit("StorageIntf.cpp include insertion point not found")
+              storage_text = (
+                  storage_text[:first_include]
+                  + spdlog_include
+                  + storage_text[first_include:]
+              )
 
           marker = "KiriPad 2A.33 archive initialize index probe"
           if marker in storage_text:
@@ -2280,7 +2295,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A33-runtime-unsigned-ipa
+          name: KiriPad-Phase2A33b-runtime-unsigned-ipa
           path: artifacts/KiriPad-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
