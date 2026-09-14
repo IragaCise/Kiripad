@@ -1,4 +1,4 @@
-name: Build KiriPad Phase 2A.38b Generic Protected TJS AutoPath
+name: Build KiriPad Phase 2A.39 HistoryLayer FrameOpacity Compat
 
 on:
   workflow_dispatch:
@@ -2337,6 +2337,201 @@ jobs:
 
           PY
 
+      - name: Phase 2A.39 add HistoryLayer frameOpacity compatibility
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd .engine-src/KrKr2-Next
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path("cpp/core/base/ScriptMgnIntf.cpp")
+          text = path.read_text(encoding="utf-8")
+
+          marker = "KiriPad 2A.39 HistoryLayer frameOpacity compat"
+          if marker in text:
+              raise SystemExit("2A.39 marker already present unexpectedly")
+
+          # Locate the context-taking TVPExecuteStorage overload robustly.
+          sig = re.search(
+              r'void\s+TVPExecuteStorage\s*\(\s*const\s+ttstr\s*&\s*name\s*,\s*'
+              r'iTJSDispatch2\s*\*\s*context\s*,\s*tTJSVariant\s*\*\s*result\s*,\s*'
+              r'bool\s+isexpression\s*,\s*const\s+tjs_char\s*\*\s*modestr\s*\)',
+              text,
+              re.S,
+          )
+          if not sig:
+              raise SystemExit("2A.39: TVPExecuteStorage(context) signature not found")
+
+          open_brace = text.find("{", sig.end())
+          if open_brace < 0:
+              raise SystemExit("2A.39: TVPExecuteStorage opening brace not found")
+
+          # Find the matching closing brace of this overload.
+          depth = 0
+          close_brace = None
+          for i in range(open_brace, len(text)):
+              ch = text[i]
+              if ch == "{":
+                  depth += 1
+              elif ch == "}":
+                  depth -= 1
+                  if depth == 0:
+                      close_brace = i
+                      break
+
+          if close_brace is None:
+              raise SystemExit("2A.39: TVPExecuteStorage closing brace not found")
+
+          func = text[open_brace:close_brace + 1]
+
+          # We need the text-execution branch because protected KAGEX scripts are text,
+          # and the class is defined only after ExecScript has completed.
+          if "TVPScriptEngine->ExecScript" not in func:
+              raise SystemExit("2A.39: ExecScript call not found in TVPExecuteStorage")
+          if "ttstr shortname" not in func:
+              raise SystemExit("2A.39: shortname variable not found in TVPExecuteStorage")
+
+          inject = r'''
+              // KiriPad 2A.39 HistoryLayer frameOpacity compat.
+              //
+              // The Sanoba KAGEX config assigns frameOpacity inside
+              // HistoryLayer_config().  The loaded HistoryLayer class in this runtime
+              // does not expose that member, so TJS throws "Member frameOpacity does
+              // not exist".  Add the missing class member after HistoryLayer.tjs has
+              // defined the class but before KAGWindow creates a HistoryLayer instance.
+              //
+              // Only create it when absent; do not overwrite a game-provided member.
+              if(!isexpression &&
+                 (shortname == TJS_W("historylayer.tjs") ||
+                  shortname == TJS_W("HistoryLayer.tjs") ||
+                  name == TJS_W("historylayer.tjs") ||
+                  name == TJS_W("HistoryLayer.tjs"))) {
+
+                  TVPAddImportantLog(
+                      TJS_W("(info) KiriPad 2A.39 HistoryLayer frameOpacity compat: probe"));
+
+                  iTJSDispatch2 *kiriPad2A39Global =
+                      TVPScriptEngine->GetGlobalNoAddRef();
+
+                  const tjs_char *kiriPad2A39Classes[] = {
+                      TJS_W("HistoryLayer"),
+                      TJS_W("HistoryLayerOriginal")
+                  };
+
+                  for(const tjs_char *kiriPad2A39ClassName : kiriPad2A39Classes) {
+                      tTJSVariant kiriPad2A39ClassValue;
+                      tjs_error kiriPad2A39GetClass =
+                          kiriPad2A39Global->PropGet(
+                              TJS_MEMBERMUSTEXIST,
+                              kiriPad2A39ClassName,
+                              NULL,
+                              &kiriPad2A39ClassValue,
+                              kiriPad2A39Global);
+
+                      if(TJS_FAILED(kiriPad2A39GetClass) ||
+                         kiriPad2A39ClassValue.Type() != tvtObject) {
+                          TVPAddImportantLog(
+                              ttstr(TJS_W("(info) KiriPad 2A.39 class not found: ")) +
+                              kiriPad2A39ClassName);
+                          continue;
+                      }
+
+                      tTJSVariantClosure kiriPad2A39Closure =
+                          kiriPad2A39ClassValue.AsObjectClosureNoAddRef();
+
+                      if(!kiriPad2A39Closure.Object) {
+                          TVPAddImportantLog(
+                              ttstr(TJS_W("(info) KiriPad 2A.39 class has no object: ")) +
+                              kiriPad2A39ClassName);
+                          continue;
+                      }
+
+                      iTJSDispatch2 *kiriPad2A39Obj =
+                          kiriPad2A39Closure.Object;
+                      iTJSDispatch2 *kiriPad2A39This =
+                          kiriPad2A39Closure.ObjThis
+                              ? kiriPad2A39Closure.ObjThis
+                              : kiriPad2A39Closure.Object;
+
+                      tTJSVariant kiriPad2A39Existing;
+                      tjs_error kiriPad2A39Get =
+                          kiriPad2A39Obj->PropGet(
+                              0,
+                              TJS_W("frameOpacity"),
+                              NULL,
+                              &kiriPad2A39Existing,
+                              kiriPad2A39This);
+
+                      if(TJS_SUCCEEDED(kiriPad2A39Get)) {
+                          TVPAddImportantLog(
+                              ttstr(TJS_W("(info) KiriPad 2A.39 frameOpacity already exists on ")) +
+                              kiriPad2A39ClassName);
+                          continue;
+                      }
+
+                      tTJSVariant kiriPad2A39Zero((tjs_int)0);
+                      tjs_error kiriPad2A39Set =
+                          kiriPad2A39Obj->PropSet(
+                              TJS_MEMBERENSURE | TJS_IGNOREPROP,
+                              TJS_W("frameOpacity"),
+                              NULL,
+                              &kiriPad2A39Zero,
+                              kiriPad2A39This);
+
+                      TVPAddImportantLog(
+                          ttstr(TJS_W("(info) KiriPad 2A.39 frameOpacity add ")) +
+                          kiriPad2A39ClassName +
+                          (TJS_SUCCEEDED(kiriPad2A39Set)
+                              ? TJS_W("=YES")
+                              : TJS_W("=NO")));
+                  }
+              }
+          '''
+
+          # Insert immediately before the function's final closing brace.
+          text = text[:close_brace] + inject + text[close_brace:]
+          path.write_text(text, encoding="utf-8")
+
+          patched = path.read_text(encoding="utf-8")
+
+          for token in (
+              "KiriPad 2A.39 HistoryLayer frameOpacity compat",
+              'TJS_W("HistoryLayer")',
+              'TJS_W("HistoryLayerOriginal")',
+              'TJS_W("frameOpacity")',
+              "TJS_MEMBERENSURE | TJS_IGNOREPROP",
+              "frameOpacity add ",
+          ):
+              if token not in patched:
+                  raise SystemExit(f"2A.39 verification failed: {token}")
+
+          # Re-check that the overload still has a valid body and our patch is inside it.
+          sig2 = re.search(
+              r'void\s+TVPExecuteStorage\s*\(\s*const\s+ttstr\s*&\s*name\s*,\s*'
+              r'iTJSDispatch2\s*\*\s*context\s*,\s*tTJSVariant\s*\*\s*result\s*,\s*'
+              r'bool\s+isexpression\s*,\s*const\s+tjs_char\s*\*\s*modestr\s*\)',
+              patched,
+              re.S,
+          )
+          if not sig2:
+              raise SystemExit("2A.39: TVPExecuteStorage signature damaged")
+
+          pos = patched.index("KiriPad 2A.39 HistoryLayer frameOpacity compat")
+          line_no = patched[:pos].count("\n") + 1
+          lines = patched.splitlines()
+          lo = max(0, line_no - 12)
+          hi = min(len(lines), line_no + 100)
+
+          print("Installed Phase 2A.39 HistoryLayer frameOpacity compatibility member.")
+          print("===== 2A.39 patched source window =====")
+          for n in range(lo, hi):
+              print(f"{n+1:5d}: {lines[n]}")
+          print("===== end window =====")
+
+          PY
+
       - name: Configure and build upstream iOS engine only
         shell: bash
         run: |
@@ -2971,7 +3166,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A38b-runtime-unsigned-ipa
+          name: KiriPad-Phase2A39-runtime-unsigned-ipa
           path: artifacts/KiriPad-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
