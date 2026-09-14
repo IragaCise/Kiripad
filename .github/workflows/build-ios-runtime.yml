@@ -1,4 +1,4 @@
-name: Build KiriPad Phase 2A.40b HistoryLayer Config Member Compat
+name: Build KiriPad Phase 2A.41 HistoryLayer NameIndent Compat
 
 on:
   workflow_dispatch:
@@ -2337,7 +2337,7 @@ jobs:
 
           PY
 
-      - name: Phase 2A.40b add HistoryLayer config-member compatibility
+      - name: Phase 2A.41 add HistoryLayer nameIndent compatibility
         shell: bash
         run: |
           set -euo pipefail
@@ -2457,7 +2457,8 @@ jobs:
 
                       const tjs_char *kiriPad2A40bMembers[] = {
                           TJS_W("frameOpacity"),
-                          TJS_W("actionIndent")
+                          TJS_W("actionIndent"),
+                          TJS_W("nameIndent")
                       };
 
                       for(const tjs_char *kiriPad2A40bMember :
@@ -2515,6 +2516,7 @@ jobs:
               'TJS_W("HistoryLayerOriginal")',
               'TJS_W("frameOpacity")',
               'TJS_W("actionIndent")',
+              'TJS_W("nameIndent")',
               "TJS_MEMBERENSURE | TJS_IGNOREPROP",
               "KiriPad 2A.40b member add ",
           ):
@@ -2538,7 +2540,8 @@ jobs:
           lo = max(0, line_no - 12)
           hi = min(len(lines), line_no + 100)
 
-          print("Installed Phase 2A.40b HistoryLayer config-member compatibility.")
+          print("Installed Phase 2A.41 HistoryLayer compatibility.")
+          print("Observed members: frameOpacity, actionIndent, nameIndent")
           print("===== 2A.40b patched source window =====")
           for n in range(lo, hi):
               print(f"{n+1:5d}: {lines[n]}")
@@ -3180,7 +3183,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A40b-runtime-unsigned-ipa
+          name: KiriPad-Phase2A41-runtime-unsigned-ipa
           path: artifacts/KiriPad-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
