@@ -1,4 +1,4 @@
-name: Build KiriPad Phase 2A.36b Robust YUZUSOFT Storage Alias
+name: Build KiriPad Phase 2A.36c Safe YUZUSOFT Storage Alias
 
 on:
   workflow_dispatch:
@@ -1823,7 +1823,7 @@ jobs:
 
           PY
 
-      - name: Phase 2A.36b add robust YUZUSOFT storage aliases
+      - name: Phase 2A.36c safely add YUZUSOFT storage aliases
         shell: bash
         run: |
           set -euo pipefail
@@ -1833,100 +1833,76 @@ jobs:
           import re
           import hashlib
 
+          # Locate the real archive implementation file.
           source_path = None
           source_text = None
-
           for p in Path("cpp").rglob("*.cpp"):
               try:
                   body = p.read_text(encoding="utf-8")
               except Exception:
                   continue
 
-              if ("tTVPArchive::CreateStream" in body and
-                  "tTVPArchive::IsExistent" in body and
-                  "CreateStreamByIndex" in body and
-                  "Hash.Find" in body):
+              if (
+                  "tTVPArchive::CreateStream" in body
+                  and "tTVPArchive::IsExistent" in body
+                  and "CreateStreamByIndex" in body
+                  and "Hash.Find(name)" in body
+              ):
                   source_path = p
                   source_text = body
                   break
 
           if source_path is None:
-              raise SystemExit(
-                  "Could not locate the tTVPArchive CreateStream/IsExistent implementation"
-              )
+              raise SystemExit("2A.36c: archive implementation file not found")
 
-          print(f"2A.36b archive implementation: {source_path}")
+          print(f"2A.36c archive implementation: {source_path}")
 
-          marker = "KiriPad 2A.36b transparent Yuzu MD5 alias"
+          marker = "KiriPad 2A.36c transparent Yuzu MD5 alias"
           if marker in source_text:
-              raise SystemExit("2A.36b marker already present unexpectedly")
+              raise SystemExit("2A.36c marker already present unexpectedly")
 
+          # Add only the headers needed by the helper.
           first_include = source_text.find("#include")
           if first_include < 0:
-              raise SystemExit(f"No include insertion point in {source_path}")
+              raise SystemExit("2A.36c: include insertion point not found")
 
-          headers = [
+          for inc in (
               "#include <CommonCrypto/CommonDigest.h>\n",
               "#include <vector>\n",
               "#include <spdlog/spdlog.h>\n",
-          ]
-
-          for inc in headers:
+          ):
               if inc not in source_text:
-                  source_text = (
-                      source_text[:first_include]
-                      + inc
-                      + source_text[first_include:]
-                  )
+                  source_text = source_text[:first_include] + inc + source_text[first_include:]
                   first_include += len(inc)
 
-          def locate_function(text, method_name):
-              m = re.search(
-                  rf"\btTVPArchive::{re.escape(method_name)}\s*\("
-                  rf"\s*const\s+ttstr\s*&\s*name\s*\)",
-                  text,
-                  flags=re.MULTILINE,
-              )
-              if not m:
-                  pos = text.find(f"tTVPArchive::{method_name}")
-                  if pos >= 0:
-                      print(f"===== nearby {method_name} occurrence =====")
-                      print(text[max(0, pos-500):pos+1400])
-                  raise SystemExit(f"Could not locate tTVPArchive::{method_name} signature")
-
-              open_brace = text.find("{", m.end())
-              if open_brace < 0:
-                  raise SystemExit(f"Opening brace not found for {method_name}")
-
-              depth = 0
-              i = open_brace
-              while i < len(text):
-                  ch = text[i]
-                  if ch == "{":
-                      depth += 1
-                  elif ch == "}":
-                      depth -= 1
-                      if depth == 0:
-                          return m.start(), open_brace, i + 1
-                  i += 1
-
-              raise SystemExit(f"Closing brace not found for {method_name}")
-
-          create_sig_start, _, _ = locate_function(source_text, "CreateStream")
+          # IMPORTANT: match the COMPLETE CreateStream declaration including its return
+          # type.  This prevents inserting the helper between "tTJSBinaryStream *" and
+          # "tTVPArchive::CreateStream", which caused the 2A.36b compile failure.
+          create_decl_re = re.compile(
+              r"(?m)^[ \t]*tTJSBinaryStream\s*\*\s*"
+              r"tTVPArchive::CreateStream\s*\(\s*const\s+ttstr\s*&\s*name\s*\)"
+          )
+          m = create_decl_re.search(source_text)
+          if not m:
+              pos = source_text.find("tTVPArchive::CreateStream")
+              if pos >= 0:
+                  print("===== nearby CreateStream =====")
+                  print(source_text[max(0, pos - 500):pos + 1000])
+              raise SystemExit("2A.36c: full CreateStream declaration not found")
 
           helper = r'''
-          // KiriPad 2A.36b transparent Yuzu MD5 alias.
+          // KiriPad 2A.36c transparent Yuzu MD5 alias.
           //
-          // Protected YUZUSOFT entries may be stored under MD5(lower-case logical
-          // in-archive path encoded as UTF-16LE). Keep the logical path visible to
-          // higher layers and translate only the archive hash lookup.
+          // YUZUSOFT protected XP3 entries can be stored as
+          // MD5(lower-case logical in-archive path encoded as UTF-16LE).
+          // Only the archive lookup is translated; the logical caller path remains
+          // unchanged so TJS relative-path behavior is preserved.
           #if defined(__APPLE__)
-          static ttstr KiriPad2A36bYuzuRawName(const ttstr &logicalName)
+          static ttstr KiriPad2A36cYuzuRawName(const ttstr &logicalName)
           {
               std::vector<unsigned char> bytes;
               const tjs_char *s = logicalName.c_str();
               const tjs_int len = logicalName.GetLen();
-
               bytes.reserve(static_cast<size_t>(len) * 2);
 
               for(tjs_int i = 0; i < len; ++i) {
@@ -1942,8 +1918,7 @@ jobs:
                   static_cast<CC_LONG>(bytes.size()),
                   digest);
 
-              static const tjs_char hex[] =
-                  TJS_W("0123456789abcdef");
+              static const tjs_char hex[] = TJS_W("0123456789abcdef");
               tjs_char out[CC_MD5_DIGEST_LENGTH * 2 + 1] = {};
 
               for(int i = 0; i < CC_MD5_DIGEST_LENGTH; ++i) {
@@ -1957,180 +1932,214 @@ jobs:
 
           '''
 
-          source_text = (
-              source_text[:create_sig_start]
-              + helper
-              + source_text[create_sig_start:]
-          )
+          # Safe insertion point: before the WHOLE declaration line, including return type.
+          source_text = source_text[:m.start()] + helper + source_text[m.start():]
 
-          create_sig_start, create_open, create_end = locate_function(
-              source_text, "CreateStream"
-          )
+          def function_span(text, method_name):
+              if method_name == "CreateStream":
+                  pat = re.compile(
+                      r"(?m)^[ \t]*tTJSBinaryStream\s*\*\s*"
+                      r"tTVPArchive::CreateStream\s*\(\s*const\s+ttstr\s*&\s*name\s*\)"
+                  )
+              else:
+                  pat = re.compile(
+                      r"(?m)^[ \t]*bool\s+"
+                      r"tTVPArchive::IsExistent\s*\(\s*const\s+ttstr\s*&\s*name\s*\)"
+                  )
 
-          create_body = r'''{
-              if(name.IsEmpty()) return NULL;
+              mm = pat.search(text)
+              if not mm:
+                  raise SystemExit(f"2A.36c: {method_name} declaration not found")
 
-              if(!Init) {
-                  Init = true;
-                  AddToHash();
-              }
+              brace = text.find("{", mm.end())
+              if brace < 0:
+                  raise SystemExit(f"2A.36c: {method_name} opening brace not found")
 
-              tjs_uint *p = Hash.Find(name);
+              depth = 0
+              for i in range(brace, len(text)):
+                  ch = text[i]
+                  if ch == "{":
+                      depth += 1
+                  elif ch == "}":
+                      depth -= 1
+                      if depth == 0:
+                          return mm.start(), brace, i + 1
+
+              raise SystemExit(f"2A.36c: {method_name} closing brace not found")
+
+          # ------------------------------------------------------------------
+          # CreateStream: preserve the original signature/body and inject ONLY
+          # after the original Hash.Find(name) line.
+          # ------------------------------------------------------------------
+          _, create_open, create_end = function_span(source_text, "CreateStream")
+          create_func = source_text[create_open:create_end]
+
+          find_line = "tjs_uint *p = Hash.Find(name);"
+          if create_func.count(find_line) != 1:
+              print("===== CreateStream function =====")
+              print(create_func)
+              raise SystemExit(
+                  f"2A.36c: expected one Hash.Find line in CreateStream, "
+                  f"found {create_func.count(find_line)}"
+              )
+
+          create_inject = r'''tjs_uint *p = Hash.Find(name);
 
           #if defined(__APPLE__)
-              ttstr kiriPad2A36bRaw;
-
               if(!p) {
-                  kiriPad2A36bRaw =
-                      KiriPad2A36bYuzuRawName(name);
-                  p = Hash.Find(kiriPad2A36bRaw);
+                  ttstr kiriPad2A36cRaw =
+                      KiriPad2A36cYuzuRawName(name);
+                  p = Hash.Find(kiriPad2A36cRaw);
 
                   if(p) {
                       spdlog::info(
-                          "KiriPad 2A.36b Yuzu alias stream logical='{}' raw='{}'",
+                          "KiriPad 2A.36c Yuzu alias stream logical='{}' raw='{}'",
                           name.AsStdString(),
-                          kiriPad2A36bRaw.AsStdString());
+                          kiriPad2A36cRaw.AsStdString());
                   }
               }
 
+              // GARbro shows Config.tjs under main/Config.tjs, while KAG requests
+              // it by basename through its auto-path logic.
               if(!p && name == TJS_W("config.tjs")) {
-                  ttstr kiriPad2A36bConfigLogical =
+                  const ttstr kiriPad2A36cConfigLogical =
                       TJS_W("main/config.tjs");
-                  ttstr kiriPad2A36bConfigRaw =
-                      KiriPad2A36bYuzuRawName(
-                          kiriPad2A36bConfigLogical);
+                  const ttstr kiriPad2A36cConfigRaw =
+                      KiriPad2A36cYuzuRawName(kiriPad2A36cConfigLogical);
 
-                  p = Hash.Find(kiriPad2A36bConfigRaw);
+                  p = Hash.Find(kiriPad2A36cConfigRaw);
 
                   spdlog::info(
-                      "KiriPad 2A.36b Config stream probe logical='{}' raw='{}' hit={}",
-                      kiriPad2A36bConfigLogical.AsStdString(),
-                      kiriPad2A36bConfigRaw.AsStdString(),
+                      "KiriPad 2A.36c Config stream probe "
+                      "logical='{}' raw='{}' hit={}",
+                      kiriPad2A36cConfigLogical.AsStdString(),
+                      kiriPad2A36cConfigRaw.AsStdString(),
                       p ? "YES" : "NO");
 
                   if(p) {
                       spdlog::info(
-                          "KiriPad 2A.36b Config alias stream requested='{}' "
-                          "mapped='{}' raw='{}'",
+                          "KiriPad 2A.36c Config alias stream "
+                          "requested='{}' mapped='{}' raw='{}'",
                           name.AsStdString(),
-                          kiriPad2A36bConfigLogical.AsStdString(),
-                          kiriPad2A36bConfigRaw.AsStdString());
+                          kiriPad2A36cConfigLogical.AsStdString(),
+                          kiriPad2A36cConfigRaw.AsStdString());
                   }
               }
-          #endif
+          #endif'''
 
-              if(!p)
-                  TVPThrowExceptionMessage(
-                      TVPStorageInArchiveNotFound,
-                      name,
-                      ArchiveName);
+          create_func = create_func.replace(find_line, create_inject, 1)
+          source_text = source_text[:create_open] + create_func + source_text[create_end:]
 
-              return CreateStreamByIndex(*p);
-          }'''
+          # ------------------------------------------------------------------
+          # IsExistent: preserve its signature and setup, replacing ONLY the
+          # original one-line Hash.Find return.
+          # ------------------------------------------------------------------
+          _, exist_open, exist_end = function_span(source_text, "IsExistent")
+          exist_func = source_text[exist_open:exist_end]
 
-          source_text = (
-              source_text[:create_open]
-              + create_body
-              + source_text[create_end:]
-          )
+          old_return = "return Hash.Find(name) != NULL;"
+          if exist_func.count(old_return) != 1:
+              print("===== IsExistent function =====")
+              print(exist_func)
+              raise SystemExit(
+                  f"2A.36c: expected one direct Hash.Find return, "
+                  f"found {exist_func.count(old_return)}"
+              )
 
-          exist_sig_start, exist_open, exist_end = locate_function(
-              source_text, "IsExistent"
-          )
-
-          exist_body = r'''{
-              if(name.IsEmpty()) return false;
-
-              if(!Init) {
-                  Init = true;
-                  AddToHash();
-              }
-
-              tjs_uint *p = Hash.Find(name);
+          exist_replacement = r'''tjs_uint *p = Hash.Find(name);
               if(p) return true;
 
           #if defined(__APPLE__)
-              ttstr kiriPad2A36bRaw =
-                  KiriPad2A36bYuzuRawName(name);
+              {
+                  const ttstr kiriPad2A36cRaw =
+                      KiriPad2A36cYuzuRawName(name);
+                  p = Hash.Find(kiriPad2A36cRaw);
 
-              p = Hash.Find(kiriPad2A36bRaw);
-
-              if(p) {
-                  spdlog::info(
-                      "KiriPad 2A.36b Yuzu alias exists logical='{}' raw='{}'",
-                      name.AsStdString(),
-                      kiriPad2A36bRaw.AsStdString());
-                  return true;
+                  if(p) {
+                      spdlog::info(
+                          "KiriPad 2A.36c Yuzu alias exists logical='{}' raw='{}'",
+                          name.AsStdString(),
+                          kiriPad2A36cRaw.AsStdString());
+                      return true;
+                  }
               }
 
               if(name == TJS_W("config.tjs")) {
-                  ttstr kiriPad2A36bConfigLogical =
+                  const ttstr kiriPad2A36cConfigLogical =
                       TJS_W("main/config.tjs");
-                  ttstr kiriPad2A36bConfigRaw =
-                      KiriPad2A36bYuzuRawName(
-                          kiriPad2A36bConfigLogical);
+                  const ttstr kiriPad2A36cConfigRaw =
+                      KiriPad2A36cYuzuRawName(kiriPad2A36cConfigLogical);
 
-                  p = Hash.Find(kiriPad2A36bConfigRaw);
+                  p = Hash.Find(kiriPad2A36cConfigRaw);
 
                   spdlog::info(
-                      "KiriPad 2A.36b Config exists probe logical='{}' raw='{}' hit={}",
-                      kiriPad2A36bConfigLogical.AsStdString(),
-                      kiriPad2A36bConfigRaw.AsStdString(),
+                      "KiriPad 2A.36c Config exists probe "
+                      "logical='{}' raw='{}' hit={}",
+                      kiriPad2A36cConfigLogical.AsStdString(),
+                      kiriPad2A36cConfigRaw.AsStdString(),
                       p ? "YES" : "NO");
 
                   if(p) {
                       spdlog::info(
-                          "KiriPad 2A.36b Config alias exists requested='{}' "
-                          "mapped='{}' raw='{}'",
+                          "KiriPad 2A.36c Config alias exists "
+                          "requested='{}' mapped='{}' raw='{}'",
                           name.AsStdString(),
-                          kiriPad2A36bConfigLogical.AsStdString(),
-                          kiriPad2A36bConfigRaw.AsStdString());
+                          kiriPad2A36cConfigLogical.AsStdString(),
+                          kiriPad2A36cConfigRaw.AsStdString());
                       return true;
                   }
               }
           #endif
 
-              return false;
-          }'''
+              return false;'''
 
-          source_text = (
-              source_text[:exist_open]
-              + exist_body
-              + source_text[exist_end:]
-          )
+          exist_func = exist_func.replace(old_return, exist_replacement, 1)
+          source_text = source_text[:exist_open] + exist_func + source_text[exist_end:]
 
           source_path.write_text(source_text, encoding="utf-8")
 
           patched = source_path.read_text(encoding="utf-8")
 
-          required = (
-              "KiriPad 2A.36b transparent Yuzu MD5 alias",
-              "KiriPad2A36bYuzuRawName",
-              "KiriPad 2A.36b Yuzu alias stream",
-              "KiriPad 2A.36b Yuzu alias exists",
-              "KiriPad 2A.36b Config stream probe",
-              "KiriPad 2A.36b Config exists probe",
+          # Structural safety checks: return type must still be directly attached to
+          # the method declaration, and the helper must be outside the function.
+          if not create_decl_re.search(patched):
+              raise SystemExit("2A.36c: CreateStream return type/signature was damaged")
+
+          if patched.count("static ttstr KiriPad2A36cYuzuRawName") != 1:
+              raise SystemExit("2A.36c: helper count is not exactly one")
+
+          for token in (
+              "KiriPad 2A.36c transparent Yuzu MD5 alias",
+              "KiriPad 2A.36c Yuzu alias stream",
+              "KiriPad 2A.36c Yuzu alias exists",
+              "KiriPad 2A.36c Config stream probe",
+              "KiriPad 2A.36c Config exists probe",
               'TJS_W("main/config.tjs")',
-          )
-
-          for token in required:
+          ):
               if token not in patched:
-                  raise SystemExit(f"2A.36b verification failed: {token}")
+                  raise SystemExit(f"2A.36c verification failed: {token}")
 
+          # Verify the two known logical-name hashes in the Actions log.
           def md5_utf16le(s):
               return hashlib.md5(s.encode("utf-16le")).hexdigest()
 
           init_md5 = md5_utf16le("system/initialize.tjs")
           config_md5 = md5_utf16le("main/config.tjs")
 
-          print("Installed Phase 2A.36b transparent YUZUSOFT storage alias.")
+          print("Installed Phase 2A.36c transparent YUZUSOFT storage aliases.")
           print(f"system/initialize.tjs -> {init_md5}")
           print(f"main/config.tjs       -> {config_md5}")
 
           if init_md5 != "3aad1fa7356e70bb9d78ea7159c7856b":
-              raise SystemExit("Unexpected Initialize MD5")
+              raise SystemExit("2A.36c: unexpected Initialize MD5")
           if config_md5 != "df12338c864b857d035bcc1415df7bfa":
-              raise SystemExit("Unexpected Config MD5")
+              raise SystemExit("2A.36c: unexpected Config MD5")
+
+          # Print the final declarations as a last build-time sanity check.
+          for method in ("CreateStream", "IsExistent"):
+              pos = patched.find(f"tTVPArchive::{method}")
+              print(f"===== 2A.36c final {method} declaration =====")
+              print(patched[max(0, pos - 80):pos + 160])
 
           PY
 
@@ -2768,7 +2777,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A36b-runtime-unsigned-ipa
+          name: KiriPad-Phase2A36c-runtime-unsigned-ipa
           path: artifacts/KiriPad-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
