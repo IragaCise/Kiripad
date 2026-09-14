@@ -1,4 +1,4 @@
-name: Build KiriPad Phase 2A.45b SearchPlacedPath BaseStage
+name: Build KiriPad Phase 2A.45c Prebuild BaseStage Alias
 
 on:
   workflow_dispatch:
@@ -2593,6 +2593,110 @@ jobs:
 
           PY
 
+      - name: Phase 2A.45c resolve base.stage before engine build
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd .engine-src/KrKr2-Next
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          marker = "KiriPad 2A.45c SearchPlacedPath base.stage"
+          target_path = None
+          target_text = None
+          sig_match = None
+
+          for p in Path("cpp").rglob("*.cpp"):
+              try:
+                  body = p.read_text(encoding="utf-8")
+              except Exception:
+                  continue
+
+              m = re.search(
+                  r'\bttstr\s+TVPSearchPlacedPath\s*\(\s*'
+                  r'const\s+ttstr\s*&\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)',
+                  body,
+                  re.S,
+              )
+              if m:
+                  if target_path is not None:
+                      raise SystemExit(
+                          f"2A.45c: multiple TVPSearchPlacedPath definitions: "
+                          f"{target_path} and {p}"
+                      )
+                  target_path = p
+                  target_text = body
+                  sig_match = m
+
+          if target_path is None:
+              raise SystemExit("2A.45c: TVPSearchPlacedPath definition not found")
+
+          if marker in target_text:
+              raise SystemExit("2A.45c marker already present unexpectedly")
+
+          param_name = sig_match.group(1)
+          open_brace = target_text.find("{", sig_match.end())
+          if open_brace < 0:
+              raise SystemExit("2A.45c: function opening brace not found")
+
+          inject = f'''
+              // {marker}
+          #if defined(__APPLE__)
+              if({param_name} == TJS_W("base.stage")) {{
+                  const ttstr kiriPad2A45cCandidate =
+                      TVPGetAppPath() + TJS_W("bgimage.xp3>base.stage");
+
+                  bool kiriPad2A45cExists = false;
+                  try {{
+                      kiriPad2A45cExists =
+                          TVPIsExistentStorageNoSearch(kiriPad2A45cCandidate);
+                  }} catch(...) {{
+                      kiriPad2A45cExists = false;
+                  }}
+
+                  TVPAddImportantLog(
+                      ttstr(TJS_W("(info) KiriPad 2A.45c base.stage candidate='")) +
+                      kiriPad2A45cCandidate +
+                      (kiriPad2A45cExists
+                          ? TJS_W("' exists=YES")
+                          : TJS_W("' exists=NO")));
+
+                  if(kiriPad2A45cExists) {{
+                      TVPAddImportantLog(
+                          TJS_W("(info) KiriPad 2A.45c base.stage resolved from bgimage.xp3"));
+                      return kiriPad2A45cCandidate;
+                  }}
+              }}
+          #endif
+          '''
+
+          patched = (
+              target_text[:open_brace + 1]
+              + inject
+              + target_text[open_brace + 1:]
+          )
+          target_path.write_text(patched, encoding="utf-8")
+
+          verify = target_path.read_text(encoding="utf-8")
+          required = (
+              marker,
+              'TJS_W("base.stage")',
+              'TJS_W("bgimage.xp3>base.stage")',
+              "TVPGetAppPath()",
+              "TVPIsExistentStorageNoSearch(kiriPad2A45cCandidate)",
+              "base.stage resolved from bgimage.xp3",
+              "return kiriPad2A45cCandidate;",
+          )
+          for token in required:
+              if token not in verify:
+                  raise SystemExit(f"2A.45c verification failed: {token}")
+
+          print(f"Patched before engine build: {target_path}")
+          print(f"TVPSearchPlacedPath parameter: {param_name}")
+          print("Expected base.stage UTF-16LE MD5: c7333ba1f8a6800780996de1e85c747a")
+          PY
+
       - name: Configure and build upstream iOS engine only
         shell: bash
         run: |
@@ -3168,120 +3272,6 @@ jobs:
             exit 1
           fi
 
-      - name: Phase 2A.45b resolve base.stage in TVPSearchPlacedPath
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd .engine-src/KrKr2-Next
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-
-          marker = "KiriPad 2A.45b SearchPlacedPath base.stage"
-          target_path = None
-          target_text = None
-          sig_match = None
-
-          for p in Path("cpp").rglob("*.cpp"):
-              try:
-                  body = p.read_text(encoding="utf-8")
-              except Exception:
-                  continue
-
-              m = re.search(
-                  r'\bttstr\s+TVPSearchPlacedPath\s*\(\s*'
-                  r'const\s+ttstr\s*&\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)',
-                  body,
-                  re.S,
-              )
-              if m:
-                  if target_path is not None:
-                      raise SystemExit(
-                          f"2A.45b: multiple TVPSearchPlacedPath definitions: "
-                          f"{target_path} and {p}"
-                      )
-                  target_path = p
-                  target_text = body
-                  sig_match = m
-
-          if target_path is None:
-              raise SystemExit("2A.45b: TVPSearchPlacedPath definition not found")
-
-          if marker in target_text:
-              raise SystemExit("2A.45b marker already present unexpectedly")
-
-          param_name = sig_match.group(1)
-          open_brace = target_text.find("{", sig_match.end())
-          if open_brace < 0:
-              raise SystemExit("2A.45b: function opening brace not found")
-
-          inject = f'''
-              // {marker}
-          #if defined(__APPLE__)
-              if({param_name} == TJS_W("base.stage")) {{
-                  const ttstr kiriPad2A45bCandidate =
-                      TVPGetAppPath() + TJS_W("bgimage.xp3>base.stage");
-
-                  bool kiriPad2A45bExists = false;
-                  try {{
-                      kiriPad2A45bExists =
-                          TVPIsExistentStorageNoSearch(kiriPad2A45bCandidate);
-                  }} catch(...) {{
-                      kiriPad2A45bExists = false;
-                  }}
-
-                  TVPAddImportantLog(
-                      ttstr(TJS_W("(info) KiriPad 2A.45b base.stage candidate='")) +
-                      kiriPad2A45bCandidate +
-                      (kiriPad2A45bExists
-                          ? TJS_W("' exists=YES")
-                          : TJS_W("' exists=NO")));
-
-                  if(kiriPad2A45bExists) {{
-                      TVPAddImportantLog(
-                          TJS_W("(info) KiriPad 2A.45b base.stage resolved from bgimage.xp3"));
-                      return kiriPad2A45bCandidate;
-                  }}
-              }}
-          #endif
-          '''
-
-          patched = (
-              target_text[:open_brace + 1]
-              + inject
-              + target_text[open_brace + 1:]
-          )
-          target_path.write_text(patched, encoding="utf-8")
-
-          verify = target_path.read_text(encoding="utf-8")
-          required = (
-              marker,
-              'TJS_W("base.stage")',
-              'TJS_W("bgimage.xp3>base.stage")',
-              "TVPGetAppPath()",
-              "TVPIsExistentStorageNoSearch(kiriPad2A45bCandidate)",
-              "base.stage resolved from bgimage.xp3",
-              "return kiriPad2A45bCandidate;",
-          )
-          for token in required:
-              if token not in verify:
-                  raise SystemExit(f"2A.45b verification failed: {token}")
-
-          pos = verify.index(marker)
-          line_no = verify[:pos].count("\n") + 1
-          lines = verify.splitlines()
-          lo = max(0, line_no - 8)
-          hi = min(len(lines), line_no + 45)
-
-          print(f"Patched: {target_path}")
-          print(f"TVPSearchPlacedPath parameter: {param_name}")
-          print("Expected base.stage UTF-16LE MD5: c7333ba1f8a6800780996de1e85c747a")
-          print("===== 2A.45b source window =====")
-          for n in range(lo, hi):
-              print(f"{n+1:5d}: {lines[n]}")
-          print("===== end 2A.45b window =====")
-          PY
-
       - name: Build KiriPad with runtime linked
         shell: bash
         env:
@@ -3341,7 +3331,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A45b-runtime-unsigned-ipa
+          name: KiriPad-Phase2A45c-runtime-unsigned-ipa
           path: artifacts/KiriPad-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
