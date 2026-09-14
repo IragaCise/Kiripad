@@ -1,4 +1,4 @@
-name: Build KiriPad Phase 2A.45c Prebuild BaseStage Alias
+name: Build KiriPad Phase 2A.46b KS Sysscn Cross-Archive
 
 on:
   workflow_dispatch:
@@ -2697,6 +2697,160 @@ jobs:
           print("Expected base.stage UTF-16LE MD5: c7333ba1f8a6800780996de1e85c747a")
           PY
 
+      - name: Phase 2A.46b resolve KS files from data.xp3 sysscn
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd .engine-src/KrKr2-Next
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          marker = "KiriPad 2A.46b SearchPlacedPath KS sysscn"
+          target_path = None
+          target_text = None
+          sig_match = None
+
+          for p in Path("cpp").rglob("*.cpp"):
+              try:
+                  body = p.read_text(encoding="utf-8")
+              except Exception:
+                  continue
+
+              m = re.search(
+                  r'\bttstr\s+TVPSearchPlacedPath\s*\(\s*'
+                  r'const\s+ttstr\s*&\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)',
+                  body,
+                  re.S,
+              )
+              if m:
+                  if target_path is not None:
+                      raise SystemExit(
+                          f"2A.46b: multiple TVPSearchPlacedPath definitions: "
+                          f"{target_path} and {p}"
+                      )
+                  target_path = p
+                  target_text = body
+                  sig_match = m
+
+          if target_path is None:
+              raise SystemExit("2A.46b: TVPSearchPlacedPath definition not found")
+
+          if marker in target_text:
+              raise SystemExit("2A.46b marker already present unexpectedly")
+
+          param_name = sig_match.group(1)
+          open_brace = target_text.find("{", sig_match.end())
+          if open_brace < 0:
+              raise SystemExit("2A.46b: function opening brace not found")
+
+          inject = f'''
+              // {marker}
+              //
+              // YUZUSOFT system scenarios such as first.ks live under
+              // data.xp3>sysscn/, while callers use basename-only names.
+              // Probe that logical path first.  If absent, also probe scn.xp3
+              // root as a fallback for ordinary scenario files.
+          #if defined(__APPLE__)
+              {{
+                  const tjs_int kiriPad2A46bLen = {param_name}.GetLen();
+                  const tjs_char *kiriPad2A46bName = {param_name}.c_str();
+                  const bool kiriPad2A46bIsKs =
+                      kiriPad2A46bLen >= 3 &&
+                      kiriPad2A46bName[kiriPad2A46bLen - 3] == '.' &&
+                      (kiriPad2A46bName[kiriPad2A46bLen - 2] == 'k' ||
+                       kiriPad2A46bName[kiriPad2A46bLen - 2] == 'K') &&
+                      (kiriPad2A46bName[kiriPad2A46bLen - 1] == 's' ||
+                       kiriPad2A46bName[kiriPad2A46bLen - 1] == 'S');
+
+                  if(kiriPad2A46bIsKs) {{
+                      ttstr kiriPad2A46bDataCandidate = TVPGetAppPath();
+                      kiriPad2A46bDataCandidate += TJS_W("data.xp3>sysscn/");
+                      kiriPad2A46bDataCandidate += {param_name};
+
+                      bool kiriPad2A46bDataExists = false;
+                      try {{
+                          kiriPad2A46bDataExists =
+                              TVPIsExistentStorageNoSearch(
+                                  kiriPad2A46bDataCandidate);
+                      }} catch(...) {{
+                          kiriPad2A46bDataExists = false;
+                      }}
+
+                      TVPAddImportantLog(
+                          ttstr(TJS_W("(info) KiriPad 2A.46b KS sysscn candidate='")) +
+                          kiriPad2A46bDataCandidate +
+                          (kiriPad2A46bDataExists
+                              ? TJS_W("' exists=YES")
+                              : TJS_W("' exists=NO")));
+
+                      if(kiriPad2A46bDataExists) {{
+                          TVPAddImportantLog(
+                              TJS_W("(info) KiriPad 2A.46b KS resolved from data.xp3>sysscn"));
+                          return kiriPad2A46bDataCandidate;
+                      }}
+
+                      ttstr kiriPad2A46bScnCandidate = TVPGetAppPath();
+                      kiriPad2A46bScnCandidate += TJS_W("scn.xp3>");
+                      kiriPad2A46bScnCandidate += {param_name};
+
+                      bool kiriPad2A46bScnExists = false;
+                      try {{
+                          kiriPad2A46bScnExists =
+                              TVPIsExistentStorageNoSearch(
+                                  kiriPad2A46bScnCandidate);
+                      }} catch(...) {{
+                          kiriPad2A46bScnExists = false;
+                      }}
+
+                      TVPAddImportantLog(
+                          ttstr(TJS_W("(info) KiriPad 2A.46b KS scn candidate='")) +
+                          kiriPad2A46bScnCandidate +
+                          (kiriPad2A46bScnExists
+                              ? TJS_W("' exists=YES")
+                              : TJS_W("' exists=NO")));
+
+                      if(kiriPad2A46bScnExists) {{
+                          TVPAddImportantLog(
+                              TJS_W("(info) KiriPad 2A.46b KS resolved from scn.xp3"));
+                          return kiriPad2A46bScnCandidate;
+                      }}
+                  }}
+              }}
+          #endif
+          '''
+
+          patched = (
+              target_text[:open_brace + 1]
+              + inject
+              + target_text[open_brace + 1:]
+          )
+          target_path.write_text(patched, encoding="utf-8")
+
+          verify = target_path.read_text(encoding="utf-8")
+          required = (
+              marker,
+              'TJS_W("data.xp3>sysscn/")',
+              'TJS_W("scn.xp3>")',
+              "kiriPad2A46bIsKs",
+              "TVPIsExistentStorageNoSearch",
+              "KiriPad 2A.46b KS sysscn candidate=",
+              "KiriPad 2A.46b KS resolved from data.xp3>sysscn",
+              "KiriPad 2A.45c SearchPlacedPath base.stage",
+          )
+          for token in required:
+              if token not in verify:
+                  raise SystemExit(f"2A.46b verification failed: {token}")
+
+          print(f"Patched before engine build: {target_path}")
+          print(f"TVPSearchPlacedPath parameter: {param_name}")
+          print("2A.45c base.stage compatibility preserved: YES")
+          print("2A.46b KS order:")
+          print("  1) data.xp3>sysscn/<basename>")
+          print("  2) scn.xp3><basename>")
+          print("  3) normal TVPSearchPlacedPath fallback")
+          PY
+
       - name: Configure and build upstream iOS engine only
         shell: bash
         run: |
@@ -3331,7 +3485,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A45c-runtime-unsigned-ipa
+          name: KiriPad-Phase2A46b-runtime-unsigned-ipa
           path: artifacts/KiriPad-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
