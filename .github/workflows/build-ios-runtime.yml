@@ -1,4 +1,4 @@
-name: Build KiriPad Phase 2A.34 Yuzu MD5 Initialize Probe
+name: Build KiriPad Phase 2A.36 Main Config AutoPath Alias
 
 on:
   workflow_dispatch:
@@ -1823,6 +1823,361 @@ jobs:
 
           PY
 
+      - name: Phase 2A.35 add transparent YUZUSOFT MD5 storage alias
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd .engine-src/KrKr2-Next
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("cpp/core/base/StorageIntf.cpp")
+          text = path.read_text(encoding="utf-8")
+
+          marker = "KiriPad 2A.35 transparent Yuzu MD5 alias"
+          if marker in text:
+              raise SystemExit("2A.35 marker already present unexpectedly")
+
+          first_include = text.find("#include")
+          if first_include < 0:
+              raise SystemExit("StorageIntf.cpp include insertion point not found")
+
+          headers = [
+              "#include <CommonCrypto/CommonDigest.h>\n",
+              "#include <vector>\n",
+              "#include <spdlog/spdlog.h>\n",
+          ]
+          for inc in headers:
+              if inc not in text:
+                  text = text[:first_include] + inc + text[first_include:]
+                  first_include += len(inc)
+
+          helper_anchor = "tTJSBinaryStream * tTVPArchive::CreateStream(const ttstr & name)"
+          if text.count(helper_anchor) != 1:
+              raise SystemExit(
+                  f"Expected one CreateStream anchor, found {text.count(helper_anchor)}"
+              )
+
+          helper = r'''
+          // KiriPad 2A.35 transparent Yuzu MD5 alias.
+          //
+          // Some YUZUSOFT XP3 archives store protected entries under the MD5 of the
+          // logical in-archive path.  The logical path is normalized by Kirikiri before
+          // reaching tTVPArchive, so convert that normalized UTF-16 path to explicit
+          // UTF-16LE bytes and calculate its MD5.  Higher layers continue to see the
+          // original logical path, preserving script-relative path semantics.
+          #if defined(__APPLE__)
+          static ttstr KiriPad2A35YuzuRawName(const ttstr &logicalName)
+          {
+              std::vector<unsigned char> bytes;
+              const tjs_char *s = logicalName.c_str();
+              const tjs_int len = logicalName.GetLen();
+              bytes.reserve(static_cast<size_t>(len) * 2);
+
+              for(tjs_int i = 0; i < len; ++i) {
+                  const unsigned int ch =
+                      static_cast<unsigned int>(s[i]) & 0xffffu;
+                  bytes.push_back(static_cast<unsigned char>(ch & 0xffu));
+                  bytes.push_back(static_cast<unsigned char>((ch >> 8) & 0xffu));
+              }
+
+              unsigned char digest[CC_MD5_DIGEST_LENGTH] = {};
+              CC_MD5(
+                  bytes.empty() ? nullptr : bytes.data(),
+                  static_cast<CC_LONG>(bytes.size()),
+                  digest);
+
+              static const tjs_char hex[] =
+                  TJS_W("0123456789abcdef");
+              tjs_char out[CC_MD5_DIGEST_LENGTH * 2 + 1] = {};
+
+              for(int i = 0; i < CC_MD5_DIGEST_LENGTH; ++i) {
+                  out[i * 2] = hex[(digest[i] >> 4) & 0x0f];
+                  out[i * 2 + 1] = hex[digest[i] & 0x0f];
+              }
+
+              return ttstr(out);
+          }
+          #endif
+
+          '''
+
+          text = text.replace(helper_anchor, helper + helper_anchor, 1)
+
+          create_start = text.index(helper_anchor)
+          create_end = text.find("//---------------------------------------------------------------------------", create_start)
+          if create_end < 0:
+              raise SystemExit("Could not isolate tTVPArchive::CreateStream")
+
+          create_body = text[create_start:create_end]
+          needle1 = "tjs_uint *p = Hash.Find(name);"
+          throw1 = "TVPThrowExceptionMessage(TVPStorageInArchiveNotFound"
+          ret1 = "return CreateStreamByIndex(*p);"
+
+          if create_body.count(needle1) != 1 or create_body.count(ret1) != 1:
+              print("===== CreateStream body =====")
+              print(create_body)
+              raise SystemExit("CreateStream anchors not found uniquely")
+
+          p0 = create_body.index(needle1)
+          p1 = create_body.index(ret1, p0) + len(ret1)
+          old_create = create_body[p0:p1]
+
+          new_create = r'''tjs_uint *p = Hash.Find(name);
+
+          #if defined(__APPLE__)
+              ttstr kiriPad2A35RawName;
+              if(!p) {
+                  kiriPad2A35RawName =
+                      KiriPad2A35YuzuRawName(name);
+                  p = Hash.Find(kiriPad2A35RawName);
+
+                  if(p) {
+                      spdlog::info(
+                          "KiriPad 2A.35 Yuzu alias stream logical='{}' raw='{}'",
+                          name.AsStdString(),
+                          kiriPad2A35RawName.AsStdString());
+                  }
+              }
+          #endif
+
+              if(!p) TVPThrowExceptionMessage(TVPStorageInArchiveNotFound,
+                      name, ArchiveName);
+              return CreateStreamByIndex(*p);'''
+
+          create_body = create_body[:p0] + new_create + create_body[p1:]
+          text = text[:create_start] + create_body + text[create_end:]
+
+          exist_anchor = "bool tTVPArchive::IsExistent(const ttstr & name)"
+          if text.count(exist_anchor) != 1:
+              raise SystemExit(
+                  f"Expected one IsExistent anchor, found {text.count(exist_anchor)}"
+              )
+
+          exist_start = text.index(exist_anchor)
+          exist_end = text.find("//---------------------------------------------------------------------------", exist_start)
+          if exist_end < 0:
+              raise SystemExit("Could not isolate tTVPArchive::IsExistent")
+
+          exist_body = text[exist_start:exist_end]
+          old_exist = "return Hash.Find(name) != NULL;"
+          if exist_body.count(old_exist) != 1:
+              print("===== IsExistent body =====")
+              print(exist_body)
+              raise SystemExit(
+                  f"Expected one direct Hash.Find return, found {exist_body.count(old_exist)}"
+              )
+
+          new_exist = r'''tjs_uint *p = Hash.Find(name);
+              if(p) return true;
+
+          #if defined(__APPLE__)
+              ttstr kiriPad2A35RawName =
+                  KiriPad2A35YuzuRawName(name);
+              p = Hash.Find(kiriPad2A35RawName);
+
+              if(p) {
+                  spdlog::info(
+                      "KiriPad 2A.35 Yuzu alias exists logical='{}' raw='{}'",
+                      name.AsStdString(),
+                      kiriPad2A35RawName.AsStdString());
+                  return true;
+              }
+          #endif
+
+              return false;'''
+
+          exist_body = exist_body.replace(old_exist, new_exist, 1)
+          text = text[:exist_start] + exist_body + text[exist_end:]
+
+          path.write_text(text, encoding="utf-8")
+
+          patched = path.read_text(encoding="utf-8")
+          required = (
+              "KiriPad 2A.35 transparent Yuzu MD5 alias",
+              "KiriPad2A35YuzuRawName",
+              "KiriPad 2A.35 Yuzu alias stream",
+              "KiriPad 2A.35 Yuzu alias exists",
+              "CommonCrypto/CommonDigest.h",
+          )
+          for token in required:
+              if token not in patched:
+                  raise SystemExit(f"2A.35 verification failed: {token}")
+
+          print("Installed Phase 2A.35 transparent YUZUSOFT MD5 storage alias.")
+          print("Logical path will be preserved while archive lookup falls back to MD5.")
+
+          PY
+
+      - name: Phase 2A.36 map Config.tjs to protected main/Config.tjs
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd .engine-src/KrKr2-Next
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("cpp/core/base/StorageIntf.cpp")
+          text = path.read_text(encoding="utf-8")
+
+          marker = "KiriPad 2A.36 main/Config.tjs auto-path alias"
+          if marker in text:
+              raise SystemExit("2A.36 marker already present unexpectedly")
+
+          # 2A.35 has already injected the generic logical-path -> MD5 fallback.
+          # Extend only the special Config.tjs miss case to try main/config.tjs,
+          # matching the path confirmed in GARbro.
+          create_old = r'''              if(!p) {
+                            kiriPad2A35RawName =
+                                KiriPad2A35YuzuRawName(name);
+                            p = Hash.Find(kiriPad2A35RawName);
+
+                            if(p) {
+                                spdlog::info(
+                                    "KiriPad 2A.35 Yuzu alias stream logical='{}' raw='{}'",
+                                    name.AsStdString(),
+                                    kiriPad2A35RawName.AsStdString());
+                            }
+                        }
+          '''
+
+          create_new = r'''              if(!p) {
+                            kiriPad2A35RawName =
+                                KiriPad2A35YuzuRawName(name);
+                            p = Hash.Find(kiriPad2A35RawName);
+
+                            if(p) {
+                                spdlog::info(
+                                    "KiriPad 2A.35 Yuzu alias stream logical='{}' raw='{}'",
+                                    name.AsStdString(),
+                                    kiriPad2A35RawName.AsStdString());
+                            }
+                        }
+
+                        // KiriPad 2A.36 main/Config.tjs auto-path alias.
+                        // The game asks for Config.tjs by basename, while GARbro shows
+                        // the protected logical entry at main/Config.tjs.
+                        if(!p && name == TJS_W("config.tjs")) {
+                            ttstr kiriPad2A36Logical =
+                                TJS_W("main/config.tjs");
+                            ttstr kiriPad2A36Raw =
+                                KiriPad2A35YuzuRawName(
+                                    kiriPad2A36Logical);
+                            p = Hash.Find(kiriPad2A36Raw);
+
+                            spdlog::info(
+                                "KiriPad 2A.36 Config stream probe "
+                                "logical='{}' raw='{}' hit={}",
+                                kiriPad2A36Logical.AsStdString(),
+                                kiriPad2A36Raw.AsStdString(),
+                                p ? "YES" : "NO");
+
+                            if(p) {
+                                spdlog::info(
+                                    "KiriPad 2A.36 Config alias stream "
+                                    "requested='{}' mapped='{}' raw='{}'",
+                                    name.AsStdString(),
+                                    kiriPad2A36Logical.AsStdString(),
+                                    kiriPad2A36Raw.AsStdString());
+                            }
+                        }
+          '''
+
+          if text.count(create_old) != 1:
+              pos = text.find("KiriPad 2A.35 Yuzu alias stream")
+              if pos >= 0:
+                  print("===== nearby CreateStream code =====")
+                  print(text[max(0, pos-1200):pos+1800])
+              raise SystemExit(
+                  f"Expected one 2A.35 CreateStream block, found {text.count(create_old)}"
+              )
+
+          text = text.replace(create_old, create_new, 1)
+
+          exist_old = r'''              ttstr kiriPad2A35RawName =
+                            KiriPad2A35YuzuRawName(name);
+                        p = Hash.Find(kiriPad2A35RawName);
+
+                        if(p) {
+                            spdlog::info(
+                                "KiriPad 2A.35 Yuzu alias exists logical='{}' raw='{}'",
+                                name.AsStdString(),
+                                kiriPad2A35RawName.AsStdString());
+                            return true;
+                        }
+          '''
+
+          exist_new = r'''              ttstr kiriPad2A35RawName =
+                            KiriPad2A35YuzuRawName(name);
+                        p = Hash.Find(kiriPad2A35RawName);
+
+                        if(p) {
+                            spdlog::info(
+                                "KiriPad 2A.35 Yuzu alias exists logical='{}' raw='{}'",
+                                name.AsStdString(),
+                                kiriPad2A35RawName.AsStdString());
+                            return true;
+                        }
+
+                        // KiriPad 2A.36 main/Config.tjs auto-path alias.
+                        if(name == TJS_W("config.tjs")) {
+                            ttstr kiriPad2A36Logical =
+                                TJS_W("main/config.tjs");
+                            ttstr kiriPad2A36Raw =
+                                KiriPad2A35YuzuRawName(
+                                    kiriPad2A36Logical);
+                            p = Hash.Find(kiriPad2A36Raw);
+
+                            spdlog::info(
+                                "KiriPad 2A.36 Config exists probe "
+                                "logical='{}' raw='{}' hit={}",
+                                kiriPad2A36Logical.AsStdString(),
+                                kiriPad2A36Raw.AsStdString(),
+                                p ? "YES" : "NO");
+
+                            if(p) {
+                                spdlog::info(
+                                    "KiriPad 2A.36 Config alias exists "
+                                    "requested='{}' mapped='{}' raw='{}'",
+                                    name.AsStdString(),
+                                    kiriPad2A36Logical.AsStdString(),
+                                    kiriPad2A36Raw.AsStdString());
+                                return true;
+                            }
+                        }
+          '''
+
+          if text.count(exist_old) != 1:
+              pos = text.find("KiriPad 2A.35 Yuzu alias exists")
+              if pos >= 0:
+                  print("===== nearby IsExistent code =====")
+                  print(text[max(0, pos-1200):pos+1800])
+              raise SystemExit(
+                  f"Expected one 2A.35 IsExistent block, found {text.count(exist_old)}"
+              )
+
+          text = text.replace(exist_old, exist_new, 1)
+
+          path.write_text(text, encoding="utf-8")
+
+          patched = path.read_text(encoding="utf-8")
+          required = (
+              "KiriPad 2A.36 main/Config.tjs auto-path alias",
+              'TJS_W("main/config.tjs")',
+              "KiriPad 2A.36 Config exists probe",
+              "KiriPad 2A.36 Config stream probe",
+              "KiriPad 2A.36 Config alias stream",
+          )
+          for token in required:
+              if token not in patched:
+                  raise SystemExit(f"2A.36 verification failed: {token}")
+
+          print("Installed Phase 2A.36 main/Config.tjs auto-path alias.")
+          print("Expected YUZUSOFT MD5 for main/config.tjs:")
+          print("  df12338c864b857d035bcc1415df7bfa")
+
+          PY
+
       - name: Configure and build upstream iOS engine only
         shell: bash
         run: |
@@ -2457,7 +2812,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A34-runtime-unsigned-ipa
+          name: KiriPad-Phase2A36-runtime-unsigned-ipa
           path: artifacts/KiriPad-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
