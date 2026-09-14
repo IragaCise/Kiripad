@@ -1,4 +1,4 @@
-name: Build KiriPad Phase 2A.46b KS Sysscn Cross-Archive
+name: Build KiriPad Phase 2A.47 Native Yuzu Filename Restore
 
 on:
   workflow_dispatch:
@@ -2697,7 +2697,7 @@ jobs:
           print("Expected base.stage UTF-16LE MD5: c7333ba1f8a6800780996de1e85c747a")
           PY
 
-      - name: Phase 2A.46b resolve KS files from data.xp3 sysscn
+      - name: Phase 2A.47 restore YUZUSOFT logical filenames from XP3 index
         shell: bash
         run: |
           set -euo pipefail
@@ -2706,149 +2706,194 @@ jobs:
           from pathlib import Path
           import re
 
-          marker = "KiriPad 2A.46b SearchPlacedPath KS sysscn"
-          target_path = None
-          target_text = None
-          sig_match = None
+          path = Path("cpp/core/base/XP3Archive.cpp")
+          text = path.read_text(encoding="utf-8")
 
-          for p in Path("cpp").rglob("*.cpp"):
-              try:
-                  body = p.read_text(encoding="utf-8")
-              except Exception:
-                  continue
+          marker = "KiriPad 2A.47 Yuzu logical filename restore"
+          if marker in text:
+              raise SystemExit("2A.47 marker already present unexpectedly")
 
-              m = re.search(
-                  r'\bttstr\s+TVPSearchPlacedPath\s*\(\s*'
-                  r'const\s+ttstr\s*&\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)',
-                  body,
-                  re.S,
+          count_anchor = "int segmentcount = 0;"
+          if text.count(count_anchor) != 1:
+              raise SystemExit(
+                  f"2A.47: segmentcount anchor count={text.count(count_anchor)}"
               )
-              if m:
-                  if target_path is not None:
-                      raise SystemExit(
-                          f"2A.46b: multiple TVPSearchPlacedPath definitions: "
-                          f"{target_path} and {p}"
-                      )
-                  target_path = p
-                  target_text = body
-                  sig_match = m
 
-          if target_path is None:
-              raise SystemExit("2A.46b: TVPSearchPlacedPath definition not found")
+          text = text.replace(
+              count_anchor,
+              count_anchor
+              + "\n\n#if defined(__APPLE__)\n"
+                "    int kiriPad2A47YuzuNameCount = 0;\n"
+                "#endif",
+              1,
+          )
 
-          if marker in target_text:
-              raise SystemExit("2A.46b marker already present unexpectedly")
+          file_find_re = re.compile(
+              r"(?m)^([ \t]*)// find 'File' chunk\s*\n"
+              r"([ \t]*)if\(!FindChunk\(indexdata,\s*cn_File,\s*"
+              r"ch_file_start,\s*ch_file_size\)\)"
+          )
+          matches = list(file_find_re.finditer(text))
+          if len(matches) != 1:
+              raise SystemExit(
+                  f"2A.47: File FindChunk anchor count={len(matches)}"
+              )
 
-          param_name = sig_match.group(1)
-          open_brace = target_text.find("{", sig_match.end())
-          if open_brace < 0:
-              raise SystemExit("2A.46b: function opening brace not found")
+          m = matches[0]
+          indent = m.group(1)
+          if_indent = m.group(2)
+          replacement = (
+              f"{indent}// find 'File' chunk\n"
+              "#if defined(__APPLE__)\n"
+              f"{if_indent}const tjs_uint kiriPad2A47SearchStart = ch_file_start;\n"
+              "#endif\n"
+              f"{if_indent}if(!FindChunk(indexdata, cn_File, "
+              "ch_file_start, ch_file_size))"
+          )
+          text = text[:m.start()] + replacement + text[m.end():]
 
-          inject = f'''
-              // {marker}
-              //
-              // YUZUSOFT system scenarios such as first.ks live under
-              // data.xp3>sysscn/, while callers use basename-only names.
-              // Probe that logical path first.  If absent, also probe scn.xp3
-              // root as a fallback for ordinary scenario files.
+          name_anchor = "item.Name = name;"
+          if text.count(name_anchor) != 1:
+              raise SystemExit(
+                  f"2A.47: item.Name anchor count={text.count(name_anchor)}"
+              )
+
+          restore_block = r'''
           #if defined(__APPLE__)
-              {{
-                  const tjs_int kiriPad2A46bLen = {param_name}.GetLen();
-                  const tjs_char *kiriPad2A46bName = {param_name}.c_str();
-                  const bool kiriPad2A46bIsKs =
-                      kiriPad2A46bLen >= 3 &&
-                      kiriPad2A46bName[kiriPad2A46bLen - 3] == '.' &&
-                      (kiriPad2A46bName[kiriPad2A46bLen - 2] == 'k' ||
-                       kiriPad2A46bName[kiriPad2A46bLen - 2] == 'K') &&
-                      (kiriPad2A46bName[kiriPad2A46bLen - 1] == 's' ||
-                       kiriPad2A46bName[kiriPad2A46bLen - 1] == 'S');
+                            // KiriPad 2A.47 Yuzu logical filename restore
+                            //
+                            // YUZUSOFT puts a top-level Yuzu chunk immediately before
+                            // each protected File chunk:
+                            //   u32 metadata
+                            //   u16 UTF-16 code-unit count
+                            //   UTF-16 logical path
+                            //   trailing NUL
+                            //
+                            // FindChunk skips unknown top-level chunks. Inspect the
+                            // skipped range and restore that logical path.
+                            if(ch_file_start >= 12) {
+                                const tjs_uint kiriPad2A47FileHeaderStart =
+                                    ch_file_start - 12;
+                                tjs_uint kiriPad2A47Scan =
+                                    kiriPad2A47SearchStart;
 
-                  if(kiriPad2A46bIsKs) {{
-                      ttstr kiriPad2A46bDataCandidate = TVPGetAppPath();
-                      kiriPad2A46bDataCandidate += TJS_W("data.xp3>sysscn/");
-                      kiriPad2A46bDataCandidate += {param_name};
+                                while(kiriPad2A47Scan + 12 <=
+                                      kiriPad2A47FileHeaderStart) {
+                                    const tjs_uint8 *kiriPad2A47Header =
+                                        indexdata + kiriPad2A47Scan;
 
-                      bool kiriPad2A46bDataExists = false;
-                      try {{
-                          kiriPad2A46bDataExists =
-                              TVPIsExistentStorageNoSearch(
-                                  kiriPad2A46bDataCandidate);
-                      }} catch(...) {{
-                          kiriPad2A46bDataExists = false;
-                      }}
+                                    const tjs_uint64 kiriPad2A47RawChunkSize =
+                                        (tjs_uint64)ReadI64FromMem(
+                                            kiriPad2A47Header + 4);
 
-                      TVPAddImportantLog(
-                          ttstr(TJS_W("(info) KiriPad 2A.46b KS sysscn candidate='")) +
-                          kiriPad2A46bDataCandidate +
-                          (kiriPad2A46bDataExists
-                              ? TJS_W("' exists=YES")
-                              : TJS_W("' exists=NO")));
+                                    const tjs_uint64 kiriPad2A47Remain =
+                                        (tjs_uint64)(
+                                            kiriPad2A47FileHeaderStart -
+                                            kiriPad2A47Scan - 12);
 
-                      if(kiriPad2A46bDataExists) {{
-                          TVPAddImportantLog(
-                              TJS_W("(info) KiriPad 2A.46b KS resolved from data.xp3>sysscn"));
-                          return kiriPad2A46bDataCandidate;
-                      }}
+                                    if(kiriPad2A47RawChunkSize >
+                                       kiriPad2A47Remain) {
+                                        break;
+                                    }
 
-                      ttstr kiriPad2A46bScnCandidate = TVPGetAppPath();
-                      kiriPad2A46bScnCandidate += TJS_W("scn.xp3>");
-                      kiriPad2A46bScnCandidate += {param_name};
+                                    const tjs_uint kiriPad2A47ChunkSize =
+                                        (tjs_uint)kiriPad2A47RawChunkSize;
+                                    if((tjs_uint64)kiriPad2A47ChunkSize !=
+                                       kiriPad2A47RawChunkSize) {
+                                        break;
+                                    }
 
-                      bool kiriPad2A46bScnExists = false;
-                      try {{
-                          kiriPad2A46bScnExists =
-                              TVPIsExistentStorageNoSearch(
-                                  kiriPad2A46bScnCandidate);
-                      }} catch(...) {{
-                          kiriPad2A46bScnExists = false;
-                      }}
+                                    if(!memcmp(kiriPad2A47Header, "Yuzu", 4) &&
+                                       kiriPad2A47ChunkSize >= 8) {
+                                        const tjs_uint kiriPad2A47DataStart =
+                                            kiriPad2A47Scan + 12;
 
-                      TVPAddImportantLog(
-                          ttstr(TJS_W("(info) KiriPad 2A.46b KS scn candidate='")) +
-                          kiriPad2A46bScnCandidate +
-                          (kiriPad2A46bScnExists
-                              ? TJS_W("' exists=YES")
-                              : TJS_W("' exists=NO")));
+                                        const tjs_uint16 kiriPad2A47NameLen =
+                                            (tjs_uint16)ReadI16FromMem(
+                                                indexdata +
+                                                kiriPad2A47DataStart + 4);
 
-                      if(kiriPad2A46bScnExists) {{
-                          TVPAddImportantLog(
-                              TJS_W("(info) KiriPad 2A.46b KS resolved from scn.xp3"));
-                          return kiriPad2A46bScnCandidate;
-                      }}
-                  }}
-              }}
+                                        const tjs_uint64 kiriPad2A47Needed =
+                                            6 +
+                                            (tjs_uint64)kiriPad2A47NameLen * 2;
+
+                                        if(kiriPad2A47Needed <=
+                                           (tjs_uint64)kiriPad2A47ChunkSize) {
+                                            ttstr kiriPad2A47Logical =
+                                                TVPStringFromBMPUnicode(
+                                                    (const tjs_uint16 *)(
+                                                        indexdata +
+                                                        kiriPad2A47DataStart + 6),
+                                                    kiriPad2A47NameLen);
+
+                                            if(!kiriPad2A47Logical.IsEmpty()) {
+                                                item.Name = kiriPad2A47Logical;
+                                                kiriPad2A47YuzuNameCount++;
+                                            }
+                                        }
+                                    }
+
+                                    kiriPad2A47Scan +=
+                                        12 + kiriPad2A47ChunkSize;
+                                }
+                            }
           #endif
           '''
 
-          patched = (
-              target_text[:open_brace + 1]
-              + inject
-              + target_text[open_brace + 1:]
+          text = text.replace(
+              name_anchor,
+              name_anchor + restore_block,
+              1,
           )
-          target_path.write_text(patched, encoding="utf-8")
 
-          verify = target_path.read_text(encoding="utf-8")
+          sort_anchor = "std::stable_sort(ItemVector.begin(), ItemVector.end());"
+          if text.count(sort_anchor) != 1:
+              raise SystemExit(
+                  f"2A.47: sort anchor count={text.count(sort_anchor)}"
+              )
+
+          log_block = r'''
+          #if defined(__APPLE__)
+                        if(kiriPad2A47YuzuNameCount > 0) {
+                            TVPAddLog(
+                                ttstr(
+                                    TJS_W(
+                                        "(info) KiriPad 2A.47 Yuzu logical filenames restored=")) +
+                                ttstr(kiriPad2A47YuzuNameCount));
+                        }
+          #endif
+          '''
+
+          text = text.replace(
+              sort_anchor,
+              sort_anchor + log_block,
+              1,
+          )
+
+          path.write_text(text, encoding="utf-8")
+
+          verify = path.read_text(encoding="utf-8")
           required = (
-              marker,
-              'TJS_W("data.xp3>sysscn/")',
-              'TJS_W("scn.xp3>")',
-              "kiriPad2A46bIsKs",
-              "TVPIsExistentStorageNoSearch",
-              "KiriPad 2A.46b KS sysscn candidate=",
-              "KiriPad 2A.46b KS resolved from data.xp3>sysscn",
-              "KiriPad 2A.45c SearchPlacedPath base.stage",
+              "KiriPad 2A.47 Yuzu logical filename restore",
+              "kiriPad2A47SearchStart",
+              '"Yuzu"',
+              "kiriPad2A47NameLen",
+              "TVPStringFromBMPUnicode",
+              "Yuzu logical filenames restored=",
           )
           for token in required:
               if token not in verify:
-                  raise SystemExit(f"2A.46b verification failed: {token}")
+                  raise SystemExit(
+                      f"2A.47 verification failed: {token}"
+                  )
 
-          print(f"Patched before engine build: {target_path}")
-          print(f"TVPSearchPlacedPath parameter: {param_name}")
-          print("2A.45c base.stage compatibility preserved: YES")
-          print("2A.46b KS order:")
-          print("  1) data.xp3>sysscn/<basename>")
-          print("  2) scn.xp3><basename>")
-          print("  3) normal TVPSearchPlacedPath fallback")
+          print("Phase 2A.47 XP3 Yuzu filename restoration installed.")
+          print("Expected restore counts from supplied archives:")
+          print("  data.xp3    : 1938")
+          print("  bgimage.xp3 : 108")
+          print("  scn.xp3     : 104")
+          print("  patch.xp3   : 178")
+          print("Normal Kirikiri AutoPath should now see logical paths.")
           PY
 
       - name: Configure and build upstream iOS engine only
@@ -3485,7 +3530,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A46b-runtime-unsigned-ipa
+          name: KiriPad-Phase2A47-runtime-unsigned-ipa
           path: artifacts/KiriPad-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
