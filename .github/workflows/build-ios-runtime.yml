@@ -1,4 +1,4 @@
-name: Build KiriPad Phase 2A.42 HistoryLayer HistoryOverColor Compat
+name: Build KiriPad Phase 2A.43 Config-Derived HistoryLayer Compat
 
 on:
   workflow_dispatch:
@@ -479,8 +479,7 @@ jobs:
               "KiriPad Phase 2A.15:",
               "const tjs_uint64 available",
               "buf[i] ^= xorval;",
-          ):
-              if token not in patched:
+          ):              if token not in patched:
                   raise SystemExit(f"XP3 XOR patch verification failed: {token}")
 
           if "*(uint64_t *)(buf) ^= k;" in patched:
@@ -2337,7 +2336,7 @@ jobs:
 
           PY
 
-      - name: Phase 2A.42 add HistoryLayer historyOverColor compatibility
+      - name: Phase 2A.43 add Config-derived HistoryLayer compatibility
         shell: bash
         run: |
           set -euo pipefail
@@ -2456,10 +2455,22 @@ jobs:
                               : kiriPad2A39Closure.Object;
 
                       const tjs_char *kiriPad2A40bMembers[] = {
+                          TJS_W("fontName"),
+                          TJS_W("fontBold"),
+                          TJS_W("fontHeight"),
+                          TJS_W("lineHeight"),
+                          TJS_W("verticalView"),
+                          TJS_W("everypage"),
+                          TJS_W("autoReturn"),
+                          TJS_W("maxPages"),
+                          TJS_W("maxLines"),
+                          TJS_W("storeState"),
                           TJS_W("frameOpacity"),
                           TJS_W("actionIndent"),
                           TJS_W("nameIndent"),
-                          TJS_W("historyOverColor")
+                          TJS_W("historyOverColor"),
+                          TJS_W("stopVoiceAtOpen"),
+                          TJS_W("stopVoiceAtClose")
                       };
 
                       for(const tjs_char *kiriPad2A40bMember :
@@ -2542,8 +2553,15 @@ jobs:
           lo = max(0, line_no - 12)
           hi = min(len(lines), line_no + 100)
 
-          print("Installed Phase 2A.42 HistoryLayer compatibility.")
-          print("Observed members: frameOpacity, actionIndent, nameIndent, historyOverColor")
+          print("Installed Phase 2A.43 Config-derived HistoryLayer compatibility.")
+          print("HistoryLayer_config members predeclared from decrypted Config.tjs:")
+          print("  " + ", ".join([
+              "fontName", "fontBold", "fontHeight", "lineHeight",
+              "verticalView", "everypage", "autoReturn",
+              "maxPages", "maxLines", "storeState",
+              "frameOpacity", "actionIndent", "nameIndent",
+              "historyOverColor", "stopVoiceAtOpen", "stopVoiceAtClose"
+          ]))
           print("===== 2A.40b patched source window =====")
           for n in range(lo, hi):
               print(f"{n+1:5d}: {lines[n]}")
@@ -3185,7 +3203,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A42-runtime-unsigned-ipa
+          name: KiriPad-Phase2A43-runtime-unsigned-ipa
           path: artifacts/KiriPad-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
