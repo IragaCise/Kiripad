@@ -1,4 +1,4 @@
-name: Build KiriPad Phase 2A.32 Initialize Locator
+name: Build KiriPad Phase 2A.33 XP3 Initialize Index Probe
 
 on:
   workflow_dispatch:
@@ -1461,6 +1461,191 @@ jobs:
           print(patched[max(0, p-1000):p+11000])
           PY
 
+      - name: Phase 2A.33 dump XP3 Initialize index and probe startup archive path
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd .engine-src/KrKr2-Next
+          python3 - <<'PY'
+          from pathlib import Path
+
+          # 1) Instrument the archive existence lookup itself.
+          storage_path = None
+          storage_text = None
+          for p in Path("cpp").rglob("*.cpp"):
+              try:
+                  body = p.read_text(encoding="utf-8")
+              except Exception:
+                  continue
+              if ("TVPIsExistentStorageNoSearchNoNormalize" in body and
+                  "ret = arc->IsExistent(in_arc_name);" in body and
+                  "tTVPArchive::NormalizeInArchiveStorageName" in body):
+                  storage_path = p
+                  storage_text = body
+                  break
+
+          if storage_path is None:
+              raise SystemExit("Could not locate StorageIntf implementation for 2A.33")
+
+          marker = "KiriPad 2A.33 archive initialize index probe"
+          if marker in storage_text:
+              raise SystemExit("2A.33 storage probe already present unexpectedly")
+
+          needle = "ret = arc->IsExistent(in_arc_name);"
+          if storage_text.count(needle) != 1:
+              raise SystemExit(
+                  f"Expected one archive IsExistent assignment, found "
+                  f"{storage_text.count(needle)}"
+              )
+
+          probe = r'''
+                  // KiriPad 2A.33 archive initialize index probe.
+                  {
+                      const std::string kiriPad2A33Query = in_arc_name.AsStdString();
+                      if(kiriPad2A33Query.find("initialize") != std::string::npos) {
+                          spdlog::info(
+                              "KiriPad 2A.33 archive lookup query='{}' exact={}",
+                              kiriPad2A33Query, ret ? "YES" : "NO");
+
+                          if(!ret) {
+                              int kiriPad2A33Matches = 0;
+                              const tjs_uint kiriPad2A33Count = arc->GetCount();
+                              for(tjs_uint kiriPad2A33Index = 0;
+                                  kiriPad2A33Index < kiriPad2A33Count;
+                                  ++kiriPad2A33Index) {
+                                  ttstr kiriPad2A33Raw = arc->GetName(kiriPad2A33Index);
+                                  ttstr kiriPad2A33Norm = kiriPad2A33Raw;
+                                  tTVPArchive::NormalizeInArchiveStorageName(
+                                      kiriPad2A33Norm);
+                                  const std::string kiriPad2A33Name =
+                                      kiriPad2A33Norm.AsStdString();
+
+                                  if(kiriPad2A33Name.find("initialize") !=
+                                     std::string::npos) {
+                                      ++kiriPad2A33Matches;
+                                      spdlog::info(
+                                          "KiriPad 2A.33 archive index candidate "
+                                          "idx={} raw='{}' normalized='{}'",
+                                          static_cast<unsigned int>(kiriPad2A33Index),
+                                          kiriPad2A33Raw.AsStdString(),
+                                          kiriPad2A33Name);
+                                  }
+                              }
+                              spdlog::info(
+                                  "KiriPad 2A.33 archive initialize candidate count={}",
+                                  kiriPad2A33Matches);
+                          }
+                      }
+                  }
+          '''
+
+          pos = storage_text.index(needle) + len(needle)
+          storage_text = storage_text[:pos] + probe + storage_text[pos:]
+          storage_path.write_text(storage_text, encoding="utf-8")
+
+          # 2) Probe the exact archive URI already resolved for startup.tjs.
+          script_path = Path("cpp/core/base/ScriptMgnIntf.cpp")
+          script_text = script_path.read_text(encoding="utf-8")
+
+          marker2 = "KiriPad 2A.33 startup-derived archive probe"
+          if marker2 in script_text:
+              raise SystemExit("2A.33 ScriptMgnIntf probe already present unexpectedly")
+
+          anchor = '''        if(kiriPad2A32Chosen.IsEmpty())
+                      TVPAddImportantLog(TJS_W("(info) KiriPad 2A.32 initialize candidate found=NO"));
+                  else
+                      TVPAddImportantLog(ttstr(TJS_W("(info) KiriPad 2A.32 initialize candidate found=YES path='")) + kiriPad2A32Chosen + TJS_W("'"));
+          '''
+
+          replacement = r'''        // KiriPad 2A.33 startup-derived archive probe:
+                  // "place" is the exact resolved data.xp3>startup.tjs URI.
+                  if(kiriPad2A32Chosen.IsEmpty()) {
+                      const tjs_char *kiriPad2A33Delim =
+                          TJS_strchr(place.c_str(), TVPArchiveDelimiter);
+                      if(kiriPad2A33Delim) {
+                          ttstr kiriPad2A33Archive(
+                              place.c_str(),
+                              static_cast<tjs_int>(
+                                  kiriPad2A33Delim - place.c_str()));
+                          ttstr kiriPad2A33Exact =
+                              kiriPad2A33Archive +
+                              TJS_W(">system/Initialize.tjs");
+
+                          TVPAddImportantLog(
+                              ttstr(TJS_W("(info) KiriPad 2A.33 exact candidate='")) +
+                              kiriPad2A33Exact + TJS_W("'"));
+
+                          bool kiriPad2A33Exists = false;
+                          try {
+                              kiriPad2A33Exists =
+                                  TVPIsExistentStorageNoSearch(
+                                      kiriPad2A33Exact);
+                          } catch(...) {
+                              TVPAddImportantLog(
+                                  TJS_W("(info) KiriPad 2A.33 exact existence probe threw"));
+                          }
+
+                          TVPAddImportantLog(
+                              kiriPad2A33Exists
+                                  ? TJS_W("(info) KiriPad 2A.33 exact candidate exists=YES")
+                                  : TJS_W("(info) KiriPad 2A.33 exact candidate exists=NO"));
+
+                          try {
+                              std::unique_ptr<tTJSBinaryStream> kiriPad2A33Stream{
+                                  TVPCreateBinaryStreamForRead(
+                                      kiriPad2A33Exact, TJS_W(""))
+                              };
+                              if(kiriPad2A33Stream) {
+                                  TVPAddImportantLog(
+                                      TJS_W("(info) KiriPad 2A.33 direct stream open=YES"));
+                                  if(kiriPad2A33Exists)
+                                      kiriPad2A32Chosen = kiriPad2A33Exact;
+                              }
+                          } catch(...) {
+                              TVPAddImportantLog(
+                                  TJS_W("(info) KiriPad 2A.33 direct stream open=NO"));
+                          }
+                      }
+                  }
+
+                  if(kiriPad2A32Chosen.IsEmpty())
+                      TVPAddImportantLog(TJS_W("(info) KiriPad 2A.32 initialize candidate found=NO"));
+                  else
+                      TVPAddImportantLog(ttstr(TJS_W("(info) KiriPad 2A.32 initialize candidate found=YES path='")) + kiriPad2A32Chosen + TJS_W("'"));
+          '''
+
+          if script_text.count(anchor) != 1:
+              pos = script_text.find("KiriPad 2A.32 initialize candidate found=NO")
+              if pos >= 0:
+                  print("===== nearby ScriptMgnIntf.cpp =====")
+                  print(script_text[max(0, pos-1600):pos+2200])
+              raise SystemExit(
+                  f"Expected one 2A.32 candidate-result block, found "
+                  f"{script_text.count(anchor)}"
+              )
+
+          script_text = script_text.replace(anchor, replacement, 1)
+          script_path.write_text(script_text, encoding="utf-8")
+
+          s1 = storage_path.read_text(encoding="utf-8")
+          s2 = script_path.read_text(encoding="utf-8")
+          required = (
+              (s1, "KiriPad 2A.33 archive initialize index probe"),
+              (s1, "archive index candidate"),
+              (s1, "archive initialize candidate count="),
+              (s2, "KiriPad 2A.33 startup-derived archive probe"),
+              (s2, "KiriPad 2A.33 exact candidate='"),
+              (s2, "KiriPad 2A.33 direct stream open="),
+          )
+          for body, token in required:
+              if token not in body:
+                  raise SystemExit(f"2A.33 verification failed: {token}")
+
+          print(f"Installed Phase 2A.33 storage probe in {storage_path}.")
+          print("Installed Phase 2A.33 startup-derived archive probe.")
+
+          PY
+
       - name: Configure and build upstream iOS engine only
         shell: bash
         run: |
@@ -2095,7 +2280,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A32-runtime-unsigned-ipa
+          name: KiriPad-Phase2A33-runtime-unsigned-ipa
           path: artifacts/KiriPad-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
