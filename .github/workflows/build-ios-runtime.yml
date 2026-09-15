@@ -1,4 +1,4 @@
-name: Build KiriPad Phase 2A.50b DrawDevice Class And Asset Trace
+name: Build KiriPad Phase 2A.50c DrawDevice Class And Asset Trace
 
 on:
   workflow_dispatch:
@@ -3988,44 +3988,52 @@ jobs:
             exit 1
           fi
 
-      - name: Verify Phase 2A.50b markers in upstream engine archive
+      - name: Verify Phase 2A.50c markers in merged engine archive
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
 
-          files = [
-              p for p in Path(".engine-build").rglob("*")
-              if p.is_file()
-          ]
+          ENGINE_ARCHIVE="Vendor/KrKr2Next/Libs/libengine_project.a"
+          if [[ ! -f "$ENGINE_ARCHIVE" ]]; then
+            echo "ERROR: merged engine archive not found: $ENGINE_ARCHIVE"
+            find Vendor/KrKr2Next -maxdepth 3 -type f -print || true
+            exit 1
+          fi
+
+          python3 - "$ENGINE_ARCHIVE" <<'PY'
+          from pathlib import Path
+          import sys
+
+          archive = Path(sys.argv[1])
+          data = archive.read_bytes()
 
           markers = [
+              # TJS_W literal: usually UTF-32LE on Apple, but check all forms.
               "KiriPad 2A.50b drawDevice class=",
+              # spdlog literal: plain narrow string.
               "KiriPad 2A.50b asset stream #",
           ]
 
           for marker in markers:
-              needles = (
-                  marker.encode("ascii"),
-                  marker.encode("utf-16le"),
-                  marker.encode("utf-32le"),
-              )
-              hit = None
-              for p in files:
-                  try:
-                      data = p.read_bytes()
-                  except Exception:
-                      continue
-                  if any(needle in data for needle in needles):
-                      hit = p
-                      break
-              if hit is None:
+              encodings = {
+                  "ASCII": marker.encode("ascii"),
+                  "UTF-16LE": marker.encode("utf-16le"),
+                  "UTF-32LE": marker.encode("utf-32le"),
+              }
+              hits = [
+                  encoding
+                  for encoding, needle in encodings.items()
+                  if needle in data
+              ]
+              if not hits:
                   raise SystemExit(
-                      f"ERROR: Phase 2A.50b marker missing from engine outputs: {marker}"
+                      "ERROR: Phase 2A.50c marker missing from merged "
+                      f"engine archive: {marker}"
                   )
-              print(f"Phase 2A.50b marker confirmed: {marker} -> {hit}")
-
+              print(
+                  f"Phase 2A.50c marker confirmed in {archive}: "
+                  f"{marker} [{', '.join(hits)}]"
+              )
           PY
 
       - name: Phase 2A.48 add RGBA frame pixel diagnostics
@@ -4245,7 +4253,41 @@ jobs:
           print("Phase 2A.49 DrawDevice marker found as: " + ", ".join(hits))
           PY2
 
-          echo "Phase 2A.48 and 2A.49b diagnostic markers confirmed in built app."
+          python3 - "$APP_BIN" <<'PY'
+          from pathlib import Path
+          import sys
+
+          app = Path(sys.argv[1])
+          data = app.read_bytes()
+
+          markers = [
+              "KiriPad 2A.50b drawDevice class=",
+              "KiriPad 2A.50b asset stream #",
+          ]
+
+          for marker in markers:
+              encodings = {
+                  "ASCII": marker.encode("ascii"),
+                  "UTF-16LE": marker.encode("utf-16le"),
+                  "UTF-32LE": marker.encode("utf-32le"),
+              }
+              hits = [
+                  encoding
+                  for encoding, needle in encodings.items()
+                  if needle in data
+              ]
+              if not hits:
+                  raise SystemExit(
+                      "ERROR: Phase 2A.50c marker missing from final "
+                      f"KiriPad executable: {marker}"
+                  )
+              print(
+                  f"Phase 2A.50c final-app marker confirmed: "
+                  f"{marker} [{', '.join(hits)}]"
+              )
+          PY
+
+          echo "Phase 2A.48, 2A.49 and 2A.50c diagnostic markers confirmed in built app."
 
       - name: Collect source metadata
         if: always()
@@ -4270,7 +4312,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A50b-runtime-unsigned-ipa
+          name: KiriPad-Phase2A50c-runtime-unsigned-ipa
           path: artifacts/KiriPad-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
