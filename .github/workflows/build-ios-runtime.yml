@@ -1,4 +1,4 @@
-name: Build KiriPad Phase 2A.50c DrawDevice Class And Asset Trace
+name: Build KiriPad Phase 2A.51 Event Pump Source Probe
 
 on:
   workflow_dispatch:
@@ -3413,6 +3413,227 @@ jobs:
 
           PY
 
+      - name: Phase 2A.51 inspect engine_tick and Kirikiri event pump source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd .engine-src/KrKr2-Next
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          root = Path(".")
+          out = Path("../../artifacts/runtime-build-logs/phase2A51-event-pump-source.txt")
+          out.parent.mkdir(parents=True, exist_ok=True)
+
+          lines_out = []
+
+          def emit(s=""):
+              s = str(s)
+              print(s)
+              lines_out.append(s)
+
+          def line_no(text, pos):
+              return text.count("\n", 0, pos) + 1
+
+          def extract_function(path, func_name):
+              text = path.read_text(encoding="utf-8", errors="replace")
+              # Find the function name followed by '(' but avoid declarations ending in ';'.
+              candidates = list(re.finditer(
+                  rf"\b{re.escape(func_name)}\s*\(",
+                  text
+              ))
+              for m in candidates:
+                  brace = text.find("{", m.end())
+                  semi = text.find(";", m.end())
+                  if brace < 0:
+                      continue
+                  if semi >= 0 and semi < brace:
+                      continue
+
+                  # Walk braces while ignoring quoted strings/comments well enough for C++.
+                  i = brace
+                  depth = 0
+                  state = "code"
+                  quote = None
+                  while i < len(text):
+                      ch = text[i]
+                      nxt = text[i+1] if i + 1 < len(text) else ""
+
+                      if state == "code":
+                          if ch == "/" and nxt == "/":
+                              state = "line_comment"
+                              i += 2
+                              continue
+                          if ch == "/" and nxt == "*":
+                              state = "block_comment"
+                              i += 2
+                              continue
+                          if ch in ('"', "'"):
+                              state = "string"
+                              quote = ch
+                              i += 1
+                              continue
+                          if ch == "{":
+                              depth += 1
+                          elif ch == "}":
+                              depth -= 1
+                              if depth == 0:
+                                  start = text.rfind("\n", 0, m.start()) + 1
+                                  # Include a few preceding lines containing the return type.
+                                  for _ in range(3):
+                                      prev = text.rfind("\n", 0, max(0, start - 1))
+                                      if prev < 0:
+                                          break
+                                      start = prev + 1
+                                  return text[start:i+1], line_no(text, start)
+                      elif state == "line_comment":
+                          if ch == "\n":
+                              state = "code"
+                      elif state == "block_comment":
+                          if ch == "*" and nxt == "/":
+                              state = "code"
+                              i += 2
+                              continue
+                      elif state == "string":
+                          if ch == "\\":
+                              i += 2
+                              continue
+                          if ch == quote:
+                              state = "code"
+                              quote = None
+                      i += 1
+              return None, None
+
+          emit("===== KiriPad Phase 2A.51 Event Pump Source Probe =====")
+          emit("Purpose: determine exactly what engine_tick pumps in pinned KrKr2-Next source.")
+          emit()
+
+          api = Path("bridge/engine_api/src/engine_api.cpp")
+          if not api.exists():
+              raise SystemExit(f"2A.51: missing {api}")
+
+          body, start_line = extract_function(api, "engine_tick")
+          if body is None:
+              # Dump engine_tick vicinity before failing so Action log is useful.
+              text_api = api.read_text(encoding="utf-8", errors="replace")
+              p = text_api.find("engine_tick")
+              if p >= 0:
+                  emit("===== engine_tick vicinity (function extraction failed) =====")
+                  emit(text_api[max(0, p-2500):p+6500])
+              raise SystemExit("2A.51: could not extract engine_tick definition")
+
+          emit(f"===== engine_tick definition: {api}:{start_line} =====")
+          for offset, line in enumerate(body.splitlines(), start_line):
+              emit(f"{offset:6d}: {line}")
+          emit("===== end engine_tick definition =====")
+          emit()
+
+          # Search likely Kirikiri event/timer/async machinery.
+          patterns = [
+              ("deliver", re.compile(r"TVP[A-Za-z0-9_]*(?:Deliver|Process|Dispatch|Fire)[A-Za-z0-9_]*(?:Event|Events|Message|Messages|Timer|Timers)", re.I)),
+              ("async", re.compile(r"(?:AsyncTrigger|tTJSNC_AsyncTrigger|TVP[A-Za-z0-9_]*Async[A-Za-z0-9_]*)", re.I)),
+              ("timer", re.compile(r"(?:tTJSNC_Timer|TVP[A-Za-z0-9_]*Timer[A-Za-z0-9_]*|TimerThread|TimerEvent)", re.I)),
+              ("continuous", re.compile(r"(?:ContinuousHandler|ContinuousEvent|TVP[A-Za-z0-9_]*Continuous[A-Za-z0-9_]*)", re.I)),
+              ("idle", re.compile(r"(?:ApplicationIdle|OnIdle|IdleEvent|TVP[A-Za-z0-9_]*Idle[A-Za-z0-9_]*)", re.I)),
+              ("eventintf", re.compile(r"(?:EventIntf|TVPPostEvent|TVPCancelSourceEvents|TVPInvokeEvents|TVPEventQueue)", re.I)),
+          ]
+
+          source_files = []
+          for base in (Path("bridge"), Path("cpp")):
+              if not base.exists():
+                  continue
+              for p in base.rglob("*"):
+                  if p.suffix.lower() not in {".cpp", ".cc", ".c", ".h", ".hpp", ".mm"}:
+                      continue
+                  source_files.append(p)
+
+          emit("===== event/timer/async source matches =====")
+          seen = set()
+          total = 0
+          MAX_TOTAL = 700
+          for p in sorted(source_files, key=lambda x: str(x)):
+              try:
+                  src_text = p.read_text(encoding="utf-8", errors="replace")
+              except Exception:
+                  continue
+              for no, line in enumerate(src_text.splitlines(), 1):
+                  labels = []
+                  for label, rx in patterns:
+                      if rx.search(line):
+                          labels.append(label)
+                  if not labels:
+                      continue
+                  key = (str(p), no, line)
+                  if key in seen:
+                      continue
+                  seen.add(key)
+                  emit(f"{p}:{no}: [{','.join(labels)}] {line}")
+                  total += 1
+                  if total >= MAX_TOTAL:
+                      emit(f"... truncated at {MAX_TOTAL} matches ...")
+                      break
+              if total >= MAX_TOTAL:
+                  break
+          emit(f"===== event source match count shown={total} =====")
+          emit()
+
+          # Extract a handful of especially relevant definitions if they exist.
+          candidate_functions = [
+              "TVPDeliverContinuousEvent",
+              "TVPInvokeEvents",
+              "TVPProcessEvents",
+              "TVPProcessEvent",
+              "TVPProcessMessages",
+              "TVPApplicationIdle",
+              "TVPFireTimerEvent",
+              "TVPProcessTimerEvents",
+          ]
+
+          emit("===== candidate event function definitions =====")
+          found_defs = 0
+          for name in candidate_functions:
+              found_this = False
+              for p in source_files:
+                  try:
+                      src_text = p.read_text(encoding="utf-8", errors="replace")
+                  except Exception:
+                      continue
+                  if name not in src_text:
+                      continue
+                  func, ln = extract_function(p, name)
+                  if func is not None:
+                      emit(f"----- {name}: {p}:{ln} -----")
+                      for offset, line in enumerate(func.splitlines(), ln):
+                          emit(f"{offset:6d}: {line}")
+                      emit(f"----- end {name} -----")
+                      found_defs += 1
+                      found_this = True
+                      break
+              if not found_this:
+                  emit(f"{name}: definition not found by probe")
+          emit(f"===== candidate definitions found={found_defs} =====")
+          emit()
+
+          # Show includes and direct calls in engine_api.cpp around event-ish names.
+          api_text = api.read_text(encoding="utf-8", errors="replace")
+          emit("===== event-related engine_api.cpp lines =====")
+          eventish = re.compile(
+              r"(Event|Timer|Async|Idle|Continuous|Deliver|ProcessMessage|Invoke)",
+              re.I,
+          )
+          count_api = 0
+          for no, line in enumerate(api_text.splitlines(), 1):
+              if eventish.search(line):
+                  emit(f"{api}:{no}: {line}")
+                  count_api += 1
+          emit(f"===== engine_api event-ish line count={count_api} =====")
+
+          out.write_text("\n".join(lines_out) + "\n", encoding="utf-8")
+          print(f"2A.51 source report saved: {out}")
+
+          PY
+
       - name: Configure and build upstream iOS engine only
         shell: bash
         run: |
@@ -3554,6 +3775,36 @@ jobs:
             exit 1
           fi
           echo "Phase 2A.14 engine archive marker confirmed."
+
+      - name: Phase 2A.51 inspect merged engine event symbols
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARCHIVE="Vendor/KrKr2Next/Libs/libengine_project.a"
+          REPORT="artifacts/runtime-build-logs/phase2A51-event-pump-symbols.txt"
+          mkdir -p "$(dirname "$REPORT")"
+
+          if [[ ! -f "$ARCHIVE" ]]; then
+            echo "ERROR: merged engine archive missing: $ARCHIVE"
+            exit 1
+          fi
+
+          {
+            echo "===== KiriPad Phase 2A.51 merged engine event symbols ====="
+            echo "archive=$ARCHIVE"
+            echo
+            echo "===== nm matches ====="
+            nm "$ARCHIVE" 2>/dev/null \
+              | grep -Ei 'TVP.*(Event|Timer|Async|Idle|Continuous|Deliver|Invoke|Message)|AsyncTrigger|ContinuousHandler|tTJSNC_Timer' \
+              | head -n 800 || true
+            echo
+            echo "===== object names likely containing event code ====="
+            ar t "$ARCHIVE" \
+              | grep -Ei '(Event|Timer|Async|Application|Window|System|Main)' \
+              | head -n 400 || true
+          } | tee "$REPORT"
+
+          echo "2A.51 symbol report saved: $REPORT"
 
       - name: Force-install Phase 2A.14 Documents-path runtime host
         shell: bash
@@ -4312,7 +4563,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A50c-runtime-unsigned-ipa
+          name: KiriPad-Phase2A51-runtime-unsigned-ipa
           path: artifacts/KiriPad-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
