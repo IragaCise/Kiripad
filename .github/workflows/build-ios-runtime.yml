@@ -1,4 +1,4 @@
-name: Build KiriPad Phase 2A.52b Owner Thread Startup
+name: Build KiriPad Phase 2A.52c Owner Thread Startup
 
 on:
   workflow_dispatch:
@@ -4239,7 +4239,7 @@ jobs:
             exit 1
           fi
 
-      - name: Phase 2A.52b run startup on engine owner thread
+      - name: Phase 2A.52c run startup on engine owner thread
         shell: bash
         run: |
           set -euo pipefail
@@ -4253,19 +4253,18 @@ jobs:
 
           for p in (host, header, archive):
               if not p.exists():
-                  raise SystemExit(f"2A.52b required file missing: {p}")
+                  raise SystemExit(f"2A.52c required file missing: {p}")
 
           host_text = host.read_text(encoding="utf-8")
           header_text = header.read_text(encoding="utf-8", errors="replace")
           archive_bytes = archive.read_bytes()
 
-          marker = "KiriPad 2A.52b owner-thread synchronous startup"
+          marker = "KiriPad 2A.52c owner-thread synchronous startup"
           if marker in host_text:
-              raise SystemExit("2A.52b marker already present unexpectedly")
+              raise SystemExit("2A.52c marker already present unexpectedly")
 
           # -------------------------------------------------------------------------
-          # 1) Resolve the synchronous engine_open_game declaration from the real
-          #    pinned header and determine whether it takes 2 or 3 parameters.
+          # 1) Resolve synchronous engine_open_game from the real pinned API header.
           # -------------------------------------------------------------------------
           decl_re = re.compile(
               r'\bengine_result_t\s+engine_open_game\s*\((?P<params>.*?)\)\s*;',
@@ -4278,13 +4277,11 @@ jobs:
                   if "open_game" in line:
                       print(f"{no}: {line}")
               raise SystemExit(
-                  f"2A.52b synchronous engine_open_game declaration count="
+                  f"2A.52c synchronous engine_open_game declaration count="
                   f"{len(decl_matches)}"
               )
 
           params_text = decl_matches[0].group("params")
-
-          # Header parameters here are simple C declarations; count top-level commas.
           depth = 0
           param_count = 1 if params_text.strip() else 0
           for ch in params_text:
@@ -4297,17 +4294,17 @@ jobs:
 
           if param_count not in (2, 3):
               raise SystemExit(
-                  "2A.52b unsupported engine_open_game parameter count="
+                  "2A.52c unsupported engine_open_game parameter count="
                   f"{param_count}: {params_text!r}"
               )
 
           if b"engine_open_game" not in archive_bytes:
               raise SystemExit(
-                  "2A.52b: engine_open_game symbol text not found in merged archive"
+                  "2A.52c: engine_open_game symbol text not found in merged archive"
               )
 
           # -------------------------------------------------------------------------
-          # 2) Find the actual async call without assuming indentation.
+          # 2) Locate the actual async startup call, independent of whitespace.
           # -------------------------------------------------------------------------
           call_re = re.compile(
               r'(?m)^(?P<indent>[ \t]*)'
@@ -4321,62 +4318,64 @@ jobs:
           call_matches = list(call_re.finditer(host_text))
           if len(call_matches) != 1:
               print("===== EngineRuntimeHost.mm open-game vicinity =====")
-              key = "engine_open_game_async"
-              pos = host_text.find(key)
+              pos = host_text.find("engine_open_game_async")
               if pos >= 0:
-                  lo = max(0, pos - 900)
-                  hi = min(len(host_text), pos + 1400)
-                  print(host_text[lo:hi])
+                  print(host_text[max(0, pos - 900):min(len(host_text), pos + 1500)])
               else:
-                  print("engine_open_game_async not found at all")
+                  print("engine_open_game_async not found")
               print("===== end vicinity =====")
               raise SystemExit(
-                  f"2A.52b async host call match count={len(call_matches)}"
+                  f"2A.52c async host call match count={len(call_matches)}"
               )
 
-          m = call_matches[0]
-          indent = m.group("indent")
+          call_match = call_matches[0]
+          indent = call_match.group("indent")
 
           if param_count == 3:
-              sync_call = (
-                  "engine_open_game("
-                  "_engine, engineEntryPath.UTF8String, nullptr)"
-              )
+              sync_call = "engine_open_game(_engine, engineEntryPath.UTF8String, nullptr)"
           else:
-              sync_call = (
-                  "engine_open_game("
-                  "_engine, engineEntryPath.UTF8String)"
-              )
+              sync_call = "engine_open_game(_engine, engineEntryPath.UTF8String)"
 
           replacement = (
-              indent + "// KiriPad 2A.52b owner-thread synchronous startup\n"
+              indent + "// KiriPad 2A.52c owner-thread synchronous startup\n"
               + indent + "// Keep Kirikiri initialization/TJS/KAG object creation on\n"
               + indent + "// the same OS thread that owns engine_tick().\n"
-              + indent + '[self notifyLog:@"[Phase2A.52b] starting game '
+              + indent + '[self notifyLog:@"[Phase2A.52c] starting game '
                 'synchronously on engine owner/main thread\\n"];\n'
               + indent + "auto openResult = " + sync_call + ";"
           )
 
-          host_text = host_text[:m.start()] + replacement + host_text[m.end():]
+          host_text = (
+              host_text[:call_match.start()]
+              + replacement
+              + host_text[call_match.end():]
+          )
 
-          # Update the error text associated with this startup path.
-          if 'detail ?: @"engine_open_game_async failed"' in host_text:
-              host_text = host_text.replace(
-                  'detail ?: @"engine_open_game_async failed"',
-                  'detail ?: @"engine_open_game failed"',
-                  1,
-              )
+          # Re-find the synchronous call in the updated text so subsequent targeting is
+          # relative to the exact start() startup site, not to init/stop state resets.
+          sync_pos = host_text.find("auto openResult = engine_open_game(")
+          if sync_pos < 0:
+              raise SystemExit("2A.52c: synchronous call missing after replacement")
 
-          if '[Phase2A.14] engine_open_game_async failed:' in host_text:
-              host_text = host_text.replace(
-                  '[Phase2A.14] engine_open_game_async failed:',
-                  '[Phase2A.52b] engine_open_game failed:',
-                  1,
-              )
+          # Update nearby error strings only.
+          tail_limit = min(len(host_text), sync_pos + 2500)
+          nearby = host_text[sync_pos:tail_limit]
+
+          nearby = nearby.replace(
+              'detail ?: @"engine_open_game_async failed"',
+              'detail ?: @"engine_open_game failed"',
+              1,
+          )
+          nearby = nearby.replace(
+              '[Phase2A.14] engine_open_game_async failed:',
+              '[Phase2A.52c] engine_open_game failed:',
+              1,
+          )
+          host_text = host_text[:sync_pos] + nearby + host_text[tail_limit:]
 
           # -------------------------------------------------------------------------
-          # 3) The synchronous call has finished startup before CADisplayLink starts.
-          #    Find the post-open state reset without assuming indentation.
+          # 3) Select the startup-state reset that occurs AFTER the open call.
+          #    There are intentionally similar blocks in init(), stop(), and start().
           # -------------------------------------------------------------------------
           state_re = re.compile(
               r'(?m)^(?P<indent>[ \t]*)_lastFrameSerial\s*=\s*0\s*;\s*\n'
@@ -4384,61 +4383,86 @@ jobs:
               r'(?P=indent)_tickCount\s*=\s*0\s*;'
           )
 
-          state_matches = list(state_re.finditer(host_text))
-          if len(state_matches) != 1:
-              print("===== EngineRuntimeHost.mm startup-state matches =====")
-              for key in ("_lastFrameSerial", "_startupSuccessLogged", "_tickCount"):
-                  print(f"{key}: {host_text.count(key)} occurrences")
+          all_state_matches = list(state_re.finditer(host_text))
+          after_open = [m for m in all_state_matches if m.start() > sync_pos]
+
+          if not after_open:
+              print("===== 2A.52c state-block diagnostics =====")
+              print(f"all matching state blocks={len(all_state_matches)}")
+              print(f"sync_pos={sync_pos}")
               raise SystemExit(
-                  f"2A.52b post-open state block match count={len(state_matches)}"
+                  "2A.52c: no startup-state block found after synchronous open call"
               )
 
-          sm = state_matches[0]
-          sindent = sm.group("indent")
+          state_match = after_open[0]
+
+          # Sanity bound: in the generated host the desired block is immediately after
+          # the open-result error handling. Reject a wildly distant match.
+          distance = state_match.start() - sync_pos
+          if distance > 3500:
+              print("===== 2A.52c suspicious state block vicinity =====")
+              print(host_text[sync_pos:min(len(host_text), state_match.end() + 500)])
+              raise SystemExit(
+                  f"2A.52c: nearest post-open state block too far away ({distance} bytes)"
+              )
+
+          sindent = state_match.group("indent")
           state_replacement = (
               sindent + "_lastFrameSerial = 0;\n"
               + sindent + "_startupSuccessLogged = YES;\n"
               + sindent + "_tickCount = 0;\n"
               + sindent + "[self drainStartupLogs];\n"
-              + sindent + '[self notifyLog:@"[Phase2A.52b] synchronous '
+              + sindent + '[self notifyLog:@"[Phase2A.52c] synchronous '
                 'owner-thread startup SUCCEEDED — starting CADisplayLink\\n"];'
           )
 
           host_text = (
-              host_text[:sm.start()]
+              host_text[:state_match.start()]
               + state_replacement
-              + host_text[sm.end():]
+              + host_text[state_match.end():]
           )
 
           host.write_text(host_text, encoding="utf-8")
 
           # -------------------------------------------------------------------------
-          # 4) Verify final host source.
+          # 4) Final source validation.
           # -------------------------------------------------------------------------
           check = host.read_text(encoding="utf-8")
-
           required = (
               marker,
-              "[Phase2A.52b] starting game synchronously",
-              "[Phase2A.52b] synchronous owner-thread startup SUCCEEDED",
+              "[Phase2A.52c] starting game synchronously",
+              "[Phase2A.52c] synchronous owner-thread startup SUCCEEDED",
               "auto openResult = engine_open_game(",
+              "_startupSuccessLogged = YES;",
           )
           for token in required:
               if token not in check:
-                  raise SystemExit(f"2A.52b verification failed: {token}")
+                  raise SystemExit(f"2A.52c verification failed: {token}")
 
           if re.search(
               r'engine_open_game_async\s*\(\s*_engine\s*,\s*'
               r'engineEntryPath\.UTF8String',
               check,
           ):
-              raise SystemExit("2A.52b: stale async open call remains in host")
+              raise SystemExit("2A.52c: stale async startup call remains")
 
-          print(f"2A.52b synchronous API declaration: YES ({param_count} params)")
-          print("2A.52b merged archive engine_open_game symbol text: YES")
-          print("2A.52b whitespace-independent async-call match: YES")
-          print("2A.52b whitespace-independent state-block match: YES")
-          print("2A.52b host switched async -> synchronous owner-thread startup: YES")
+          # init()/stop() must still contain NO resets; only start() becomes YES.
+          no_count = len(re.findall(r'_startupSuccessLogged\s*=\s*NO\s*;', check))
+          yes_count = len(re.findall(r'_startupSuccessLogged\s*=\s*YES\s*;', check))
+          if no_count < 2 or yes_count != 1:
+              raise SystemExit(
+                  f"2A.52c unexpected startup flag counts: NO={no_count} YES={yes_count}"
+              )
+
+          print(f"2A.52c synchronous API declaration: YES ({param_count} params)")
+          print("2A.52c merged archive engine_open_game symbol text: YES")
+          print("2A.52c async startup call matched: YES")
+          print(
+              "2A.52c nearest post-open state block selected: YES "
+              f"(distance={distance} bytes, total similar blocks={len(all_state_matches)})"
+          )
+          print(f"2A.52c startup flag counts after patch: NO={no_count} YES={yes_count}")
+          print("2A.52c host switched async -> synchronous owner-thread startup: YES")
 
           PY
 
@@ -4743,7 +4767,7 @@ jobs:
 
           echo "Phase 2A.48, 2A.49 and 2A.50c diagnostic markers confirmed in built app."
 
-      - name: Verify Phase 2A.52b synchronous-startup marker in app binary
+      - name: Verify Phase 2A.52c synchronous-startup marker in app binary
         shell: bash
         run: |
           set -euo pipefail
@@ -4754,12 +4778,12 @@ jobs:
           fi
 
           if ! strings "$APP_BIN" \
-            | grep -Fq "[Phase2A.52b] synchronous owner-thread startup SUCCEEDED"; then
-            echo "ERROR: Phase 2A.52b marker missing from final KiriPad executable"
+            | grep -Fq "[Phase2A.52c] synchronous owner-thread startup SUCCEEDED"; then
+            echo "ERROR: Phase 2A.52c marker missing from final KiriPad executable"
             exit 1
           fi
 
-          echo "Phase 2A.52b synchronous-startup marker confirmed in final app."
+          echo "Phase 2A.52c synchronous-startup marker confirmed in final app."
 
       - name: Collect source metadata
         if: always()
@@ -4784,7 +4808,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A52b-runtime-unsigned-ipa
+          name: KiriPad-Phase2A52c-runtime-unsigned-ipa
           path: artifacts/KiriPad-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
