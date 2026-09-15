@@ -1,4 +1,4 @@
-name: Build KiriPad Phase 2A.51 Event Pump Source Probe
+name: Build KiriPad Phase 2A.52 Owner Thread Startup
 
 on:
   workflow_dispatch:
@@ -4239,6 +4239,137 @@ jobs:
             exit 1
           fi
 
+      - name: Phase 2A.52 run startup on engine owner thread
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          host = Path("App/EngineRuntimeHost.mm")
+          header = Path(".engine-src/KrKr2-Next/bridge/engine_api/include/engine_api.h")
+          archive = Path("Vendor/KrKr2Next/Libs/libengine_project.a")
+
+          for p in (host, header, archive):
+              if not p.exists():
+                  raise SystemExit(f"2A.52 required file missing: {p}")
+
+          host_text = host.read_text(encoding="utf-8")
+          header_text = header.read_text(encoding="utf-8", errors="replace")
+          archive_bytes = archive.read_bytes()
+
+          marker = "KiriPad 2A.52 owner-thread synchronous startup"
+          if marker in host_text:
+              raise SystemExit("2A.52 marker already present unexpectedly")
+
+          # Confirm the pinned API really exports a synchronous engine_open_game entry
+          # before touching the host source.
+          sync_decl = re.search(
+              r'\bengine_result_t\s+engine_open_game\s*\(',
+              header_text
+          )
+          if not sync_decl:
+              # Dump all open-game declarations into the Action log.
+              print("===== engine_api.h open-game declarations =====")
+              for no, line in enumerate(header_text.splitlines(), 1):
+                  if "open_game" in line:
+                      print(f"{no}: {line}")
+              raise SystemExit(
+                  "2A.52: synchronous engine_open_game declaration not found"
+              )
+
+          # Static archive symbols are Mach-O names with a leading underscore for C
+          # functions. Search both plain and underscored spellings as a sanity check.
+          if b"engine_open_game" not in archive_bytes:
+              raise SystemExit(
+                  "2A.52: engine_open_game symbol text not found in merged archive"
+              )
+
+          old_call = (
+              "              auto openResult = "
+              "engine_open_game_async(_engine, engineEntryPath.UTF8String, nullptr);\n"
+          )
+          if host_text.count(old_call) != 1:
+              raise SystemExit(
+                  f"2A.52 async host call count={host_text.count(old_call)}"
+              )
+
+          host_text = host_text.replace(
+              old_call,
+              (
+                  "              // KiriPad 2A.52 owner-thread synchronous startup\n"
+                  "              // Keep Kirikiri initialization/TJS/KAG object creation on\n"
+                  "              // the same OS thread that owns engine_tick().  The async\n"
+                  "              // API creates a worker, while the iOS host ticks on main.\n"
+                  "              [self notifyLog:@\"[Phase2A.52] starting game "
+                  "synchronously on engine owner/main thread\\n\"];\n"
+                  "              auto openResult = "
+                  "engine_open_game(_engine, engineEntryPath.UTF8String, nullptr);\n"
+              ),
+              1,
+          )
+
+          # Update only the error block belonging to the call above.
+          host_text = host_text.replace(
+              'detail ?: @"engine_open_game_async failed"',
+              'detail ?: @"engine_open_game failed"',
+              1,
+          )
+          host_text = host_text.replace(
+              '[Phase2A.14] engine_open_game_async failed:',
+              '[Phase2A.52] engine_open_game failed:',
+              1,
+          )
+
+          # The synchronous call has completed startup before CADisplayLink starts.
+          # Replace the first post-open reset in the start method, not constructor/stop.
+          needle = (
+              "              _lastFrameSerial = 0;\n"
+              "              _startupSuccessLogged = NO;\n"
+              "              _tickCount = 0;\n"
+          )
+          if host_text.count(needle) != 1:
+              raise SystemExit(
+                  f"2A.52 post-open state block count={host_text.count(needle)}"
+              )
+
+          host_text = host_text.replace(
+              needle,
+              (
+                  "              _lastFrameSerial = 0;\n"
+                  "              _startupSuccessLogged = YES;\n"
+                  "              _tickCount = 0;\n"
+                  "              [self drainStartupLogs];\n"
+                  "              [self notifyLog:@\"[Phase2A.52] synchronous "
+                  "owner-thread startup SUCCEEDED — starting CADisplayLink\\n\"];\n"
+              ),
+              1,
+          )
+
+          host.write_text(host_text, encoding="utf-8")
+
+          check = host.read_text(encoding="utf-8")
+          required = (
+              marker,
+              "engine_open_game(_engine, engineEntryPath.UTF8String, nullptr)",
+              "[Phase2A.52] starting game synchronously",
+              "[Phase2A.52] synchronous owner-thread startup SUCCEEDED",
+          )
+          for token in required:
+              if token not in check:
+                  raise SystemExit(f"2A.52 verification failed: {token}")
+
+          # There must be no async open call left in the final host source.
+          if "engine_open_game_async(_engine, engineEntryPath.UTF8String" in check:
+              raise SystemExit("2A.52: stale async open call remains in host")
+
+          print("2A.52 synchronous API declaration: YES")
+          print("2A.52 merged archive engine_open_game symbol text: YES")
+          print("2A.52 host switched async -> synchronous owner-thread startup: YES")
+
+          PY
+
       - name: Verify Phase 2A.50c markers in merged engine archive
         shell: bash
         run: |
@@ -4540,6 +4671,21 @@ jobs:
 
           echo "Phase 2A.48, 2A.49 and 2A.50c diagnostic markers confirmed in built app."
 
+      - name: Verify Phase 2A.52 synchronous-startup marker in app binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_BIN="$(find build-ios-ci -type f -path '*/Release-iphoneos/*.app/KiriPad' -print -quit)"
+          if [[ -z "$APP_BIN" || ! -f "$APP_BIN" ]]; then
+            echo "ERROR: final KiriPad executable not found"
+            exit 1
+          fi
+          if ! strings "$APP_BIN" | grep -Fq "[Phase2A.52] synchronous owner-thread startup SUCCEEDED"; then
+            echo "ERROR: Phase 2A.52 marker missing from final KiriPad executable"
+            exit 1
+          fi
+          echo "Phase 2A.52 synchronous-startup marker confirmed in final app."
+
       - name: Collect source metadata
         if: always()
         shell: bash
@@ -4563,7 +4709,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A51-runtime-unsigned-ipa
+          name: KiriPad-Phase2A52-runtime-unsigned-ipa
           path: artifacts/KiriPad-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
