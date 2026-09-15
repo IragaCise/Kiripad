@@ -1,4 +1,4 @@
-name: Build KiriPad Phase 2A.49 DrawDevice Runtime Probe
+name: Build KiriPad Phase 2A.49b DrawDevice Runtime Probe
 
 on:
   workflow_dispatch:
@@ -3951,7 +3951,7 @@ jobs:
           fi
           echo "Phase 2A.14 host + patched-engine markers confirmed in built executable."
 
-      - name: Verify Phase 2A.48/2A.49 diagnostic markers in app binary
+      - name: Verify Phase 2A.48/2A.49b diagnostic markers in app binary
         shell: bash
         run: |
           set -euo pipefail
@@ -3960,17 +3960,43 @@ jobs:
             echo "Could not locate built KiriPad executable"
             exit 1
           fi
-          STRINGS_DUMP="$RUNNER_TEMP/kiripad-2A48-strings.txt"
+
+          # Phase 2A.48 is an Objective-C NSString literal, so normal `strings`
+          # can see its ASCII payload.
+          STRINGS_DUMP="$RUNNER_TEMP/kiripad-2A49b-strings.txt"
           strings "$APP_BIN" > "$STRINGS_DUMP"
           if ! grep -Fq "[Phase2A.48] frame pixels" "$STRINGS_DUMP"; then
             echo "ERROR: Phase 2A.48 pixel-probe marker missing from built app"
             exit 1
           fi
-          if ! grep -Fq "KiriPad 2A.49 DrawDevice runtime probe" "$STRINGS_DUMP"; then
-            echo "ERROR: Phase 2A.49 DrawDevice marker missing from built app"
-            exit 1
-          fi
-          echo "Phase 2A.48 and 2A.49 diagnostic markers confirmed in built app."
+
+          # Phase 2A.49 messages are TJS_W(...) literals.  On Apple builds these
+          # are wide-character data, so ordinary `strings` is not a valid test.
+          # Search the Mach-O bytes as ASCII, UTF-16LE and UTF-32LE.
+          python3 - "$APP_BIN" <<'PY2'
+          from pathlib import Path
+          import sys
+
+          app = Path(sys.argv[1])
+          data = app.read_bytes()
+          marker = "KiriPad 2A.49 DrawDevice runtime probe"
+
+          encodings = {
+              "ASCII": marker.encode("ascii"),
+              "UTF-16LE": marker.encode("utf-16le"),
+              "UTF-32LE": marker.encode("utf-32le"),
+          }
+
+          hits = [name for name, needle in encodings.items() if needle in data]
+          if not hits:
+              print("ERROR: Phase 2A.49 DrawDevice marker missing from built app")
+              print("Checked encodings: " + ", ".join(encodings))
+              raise SystemExit(1)
+
+          print("Phase 2A.49 DrawDevice marker found as: " + ", ".join(hits))
+          PY2
+
+          echo "Phase 2A.48 and 2A.49b diagnostic markers confirmed in built app."
 
       - name: Collect source metadata
         if: always()
@@ -3995,7 +4021,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A49-runtime-unsigned-ipa
+          name: KiriPad-Phase2A49b-runtime-unsigned-ipa
           path: artifacts/KiriPad-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
