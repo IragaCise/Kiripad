@@ -1,4 +1,4 @@
-name: Build KiriPad Phase 2A.48 Frame Pixel Probe
+name: Build KiriPad Phase 2A.49 DrawDevice Runtime Probe
 
 on:
   workflow_dispatch:
@@ -2896,6 +2896,314 @@ jobs:
           print("Normal Kirikiri AutoPath should now see logical paths.")
           PY
 
+      - name: Phase 2A.49 add DrawDevice runtime diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd .engine-src/KrKr2-Next
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path("cpp/core/base/ScriptMgnIntf.cpp")
+          text = path.read_text(encoding="utf-8")
+
+          marker = "KiriPad 2A.49 DrawDevice runtime probe"
+          if marker in text:
+              raise SystemExit("2A.49 marker already present unexpectedly")
+
+          sig = re.search(
+              r'void\s+TVPExecuteStorage\s*\(\s*const\s+ttstr\s*&\s*name\s*,\s*'
+              r'iTJSDispatch2\s*\*\s*context\s*,\s*tTJSVariant\s*\*\s*result\s*,\s*'
+              r'bool\s+isexpression\s*,\s*const\s+tjs_char\s*\*\s*modestr\s*\)',
+              text, re.S)
+          if not sig:
+              raise SystemExit("2A.49: TVPExecuteStorage(context) signature not found")
+
+          open_brace = text.find("{", sig.end())
+          if open_brace < 0:
+              raise SystemExit("2A.49: opening brace not found")
+
+          depth = 0
+          close_brace = None
+          for i in range(open_brace, len(text)):
+              if text[i] == "{":
+                  depth += 1
+              elif text[i] == "}":
+                  depth -= 1
+                  if depth == 0:
+                      close_brace = i
+                      break
+          if close_brace is None:
+              raise SystemExit("2A.49: closing brace not found")
+
+          func = text[open_brace:close_brace + 1]
+          if "ttstr shortname" not in func or "TVPScriptEngine->ExecScript" not in func:
+              raise SystemExit("2A.49: expected TVPExecuteStorage body shape not found")
+
+          inject = r'''
+                        // KiriPad 2A.49 DrawDevice runtime probe.
+                        if(!isexpression &&
+                           (shortname == TJS_W("afterinit.tjs") ||
+                            shortname == TJS_W("AfterInit.tjs") ||
+                            name == TJS_W("afterinit.tjs") ||
+                            name == TJS_W("AfterInit.tjs"))) {
+
+                            TVPAddImportantLog(
+                                TJS_W("(info) KiriPad 2A.49 DrawDevice runtime probe: BEGIN"));
+
+                            iTJSDispatch2 *kiriPad2A49Global =
+                                TVPScriptEngine->GetGlobalNoAddRef();
+
+                            const tjs_char *kiriPad2A49Globals[] = {
+                                TJS_W("DrawDeviceD3D"),
+                                TJS_W("DrawDeviceD3DZ"),
+                                TJS_W("D3DLayer"),
+                                TJS_W("D3DEmotePlayer"),
+                                TJS_W("D3DMotionPlayer"),
+                                TJS_W("Window"),
+                                TJS_W("KAGWindow"),
+                                TJS_W("MainWindow"),
+                                TJS_W("mainWindow"),
+                                TJS_W("drawDevice")
+                            };
+
+                            for(const tjs_char *kiriPad2A49Name :
+                                kiriPad2A49Globals) {
+                                tTJSVariant kiriPad2A49Value;
+                                const tjs_error kiriPad2A49Er =
+                                    kiriPad2A49Global->PropGet(
+                                        TJS_MEMBERMUSTEXIST,
+                                        kiriPad2A49Name, NULL,
+                                        &kiriPad2A49Value,
+                                        kiriPad2A49Global);
+
+                                ttstr kiriPad2A49Line(
+                                    TJS_W("(info) KiriPad 2A.49 global."));
+                                kiriPad2A49Line += kiriPad2A49Name;
+
+                                if(TJS_FAILED(kiriPad2A49Er)) {
+                                    kiriPad2A49Line += TJS_W("=MISSING");
+                                } else if(kiriPad2A49Value.Type() == tvtObject) {
+                                    kiriPad2A49Line += TJS_W("=OBJECT");
+                                } else if(kiriPad2A49Value.Type() == tvtString) {
+                                    kiriPad2A49Line += TJS_W("=STRING '");
+                                    kiriPad2A49Line += ttstr(kiriPad2A49Value);
+                                    kiriPad2A49Line += TJS_W("'");
+                                } else if(kiriPad2A49Value.Type() == tvtVoid) {
+                                    kiriPad2A49Line += TJS_W("=VOID");
+                                } else {
+                                    kiriPad2A49Line += TJS_W("=PRESENT_NONOBJECT");
+                                }
+                                TVPAddImportantLog(kiriPad2A49Line);
+                            }
+
+                            tTJSVariant kiriPad2A49WindowValue;
+                            const tjs_error kiriPad2A49WindowEr =
+                                kiriPad2A49Global->PropGet(
+                                    TJS_MEMBERMUSTEXIST,
+                                    TJS_W("Window"), NULL,
+                                    &kiriPad2A49WindowValue,
+                                    kiriPad2A49Global);
+
+                            if(TJS_SUCCEEDED(kiriPad2A49WindowEr) &&
+                               kiriPad2A49WindowValue.Type() == tvtObject) {
+                                tTJSVariantClosure kiriPad2A49WindowClosure =
+                                    kiriPad2A49WindowValue.AsObjectClosureNoAddRef();
+                                iTJSDispatch2 *kiriPad2A49WindowObj =
+                                    kiriPad2A49WindowClosure.Object;
+                                iTJSDispatch2 *kiriPad2A49WindowThis =
+                                    kiriPad2A49WindowClosure.ObjThis
+                                        ? kiriPad2A49WindowClosure.ObjThis
+                                        : kiriPad2A49WindowClosure.Object;
+
+                                if(kiriPad2A49WindowObj) {
+                                    const tjs_char *kiriPad2A49WindowMembers[] = {
+                                        TJS_W("PassThroughDrawDevice"),
+                                        TJS_W("BasicDrawDevice"),
+                                        TJS_W("DrawDeviceD3D"),
+                                        TJS_W("DrawDeviceD3DZ"),
+                                        TJS_W("mainWindow"),
+                                        TJS_W("drawDevice"),
+                                        TJS_W("enableTouch")
+                                    };
+
+                                    for(const tjs_char *kiriPad2A49Member :
+                                        kiriPad2A49WindowMembers) {
+                                        tTJSVariant kiriPad2A49MemberValue;
+                                        const tjs_error kiriPad2A49MemberEr =
+                                            kiriPad2A49WindowObj->PropGet(
+                                                0, kiriPad2A49Member, NULL,
+                                                &kiriPad2A49MemberValue,
+                                                kiriPad2A49WindowThis);
+
+                                        ttstr kiriPad2A49Line(
+                                            TJS_W("(info) KiriPad 2A.49 Window."));
+                                        kiriPad2A49Line += kiriPad2A49Member;
+
+                                        if(TJS_FAILED(kiriPad2A49MemberEr)) {
+                                            kiriPad2A49Line += TJS_W("=MISSING");
+                                        } else if(
+                                            kiriPad2A49MemberValue.Type() == tvtObject) {
+                                            kiriPad2A49Line += TJS_W("=OBJECT");
+                                        } else if(
+                                            kiriPad2A49MemberValue.Type() == tvtString) {
+                                            kiriPad2A49Line += TJS_W("=STRING '");
+                                            kiriPad2A49Line += ttstr(kiriPad2A49MemberValue);
+                                            kiriPad2A49Line += TJS_W("'");
+                                        } else if(
+                                            kiriPad2A49MemberValue.Type() == tvtVoid) {
+                                            kiriPad2A49Line += TJS_W("=VOID");
+                                        } else {
+                                            kiriPad2A49Line += TJS_W("=PRESENT_NONOBJECT");
+                                        }
+                                        TVPAddImportantLog(kiriPad2A49Line);
+                                    }
+
+                                    tTJSVariant kiriPad2A49MainWindowValue;
+                                    const tjs_error kiriPad2A49MainWindowEr =
+                                        kiriPad2A49WindowObj->PropGet(
+                                            0, TJS_W("mainWindow"), NULL,
+                                            &kiriPad2A49MainWindowValue,
+                                            kiriPad2A49WindowThis);
+
+                                    if(TJS_SUCCEEDED(kiriPad2A49MainWindowEr) &&
+                                       kiriPad2A49MainWindowValue.Type() == tvtObject) {
+                                        tTJSVariantClosure kiriPad2A49MainClosure =
+                                            kiriPad2A49MainWindowValue.AsObjectClosureNoAddRef();
+                                        iTJSDispatch2 *kiriPad2A49MainObj =
+                                            kiriPad2A49MainClosure.Object;
+                                        iTJSDispatch2 *kiriPad2A49MainThis =
+                                            kiriPad2A49MainClosure.ObjThis
+                                                ? kiriPad2A49MainClosure.ObjThis
+                                                : kiriPad2A49MainClosure.Object;
+                                        if(kiriPad2A49MainObj) {
+                                            tTJSVariant kiriPad2A49DDValue;
+                                            const tjs_error kiriPad2A49DDEr =
+                                                kiriPad2A49MainObj->PropGet(
+                                                    0, TJS_W("drawDevice"), NULL,
+                                                    &kiriPad2A49DDValue,
+                                                    kiriPad2A49MainThis);
+                                            if(TJS_FAILED(kiriPad2A49DDEr)) {
+                                                TVPAddImportantLog(
+                                                    TJS_W("(info) KiriPad 2A.49 mainWindow.drawDevice=MISSING"));
+                                            } else if(kiriPad2A49DDValue.Type() == tvtObject) {
+                                                TVPAddImportantLog(
+                                                    TJS_W("(info) KiriPad 2A.49 mainWindow.drawDevice=OBJECT"));
+                                            } else if(kiriPad2A49DDValue.Type() == tvtString) {
+                                                TVPAddImportantLog(
+                                                    ttstr(TJS_W("(info) KiriPad 2A.49 mainWindow.drawDevice=STRING '")) +
+                                                    ttstr(kiriPad2A49DDValue) + TJS_W("'"));
+                                            } else {
+                                                TVPAddImportantLog(
+                                                    TJS_W("(info) KiriPad 2A.49 mainWindow.drawDevice=PRESENT_NONOBJECT"));
+                                            }
+                                        }
+                                    } else {
+                                        TVPAddImportantLog(
+                                            TJS_W("(info) KiriPad 2A.49 Window.mainWindow object=NO"));
+                                    }
+                                }
+                            }
+
+                            tTJSVariant kiriPad2A49KAGValue;
+                            const tjs_error kiriPad2A49KAGEr =
+                                kiriPad2A49Global->PropGet(
+                                    TJS_MEMBERMUSTEXIST,
+                                    TJS_W("KAGWindow"), NULL,
+                                    &kiriPad2A49KAGValue,
+                                    kiriPad2A49Global);
+
+                            if(TJS_SUCCEEDED(kiriPad2A49KAGEr) &&
+                               kiriPad2A49KAGValue.Type() == tvtObject) {
+                                tTJSVariantClosure kiriPad2A49KAGClosure =
+                                    kiriPad2A49KAGValue.AsObjectClosureNoAddRef();
+                                iTJSDispatch2 *kiriPad2A49KAGObj =
+                                    kiriPad2A49KAGClosure.Object;
+                                iTJSDispatch2 *kiriPad2A49KAGThis =
+                                    kiriPad2A49KAGClosure.ObjThis
+                                        ? kiriPad2A49KAGClosure.ObjThis
+                                        : kiriPad2A49KAGClosure.Object;
+
+                                if(kiriPad2A49KAGObj) {
+                                    const tjs_char *kiriPad2A49KAGMembers[] = {
+                                        TJS_W("drawDevice"),
+                                        TJS_W("drawDeviceName"),
+                                        TJS_W("drawDeviceClass"),
+                                        TJS_W("useD3D")
+                                    };
+                                    for(const tjs_char *kiriPad2A49Member :
+                                        kiriPad2A49KAGMembers) {
+                                        tTJSVariant kiriPad2A49MemberValue;
+                                        const tjs_error kiriPad2A49MemberEr =
+                                            kiriPad2A49KAGObj->PropGet(
+                                                0, kiriPad2A49Member, NULL,
+                                                &kiriPad2A49MemberValue,
+                                                kiriPad2A49KAGThis);
+
+                                        ttstr kiriPad2A49Line(
+                                            TJS_W("(info) KiriPad 2A.49 KAGWindow."));
+                                        kiriPad2A49Line += kiriPad2A49Member;
+
+                                        if(TJS_FAILED(kiriPad2A49MemberEr)) {
+                                            kiriPad2A49Line += TJS_W("=MISSING");
+                                        } else if(
+                                            kiriPad2A49MemberValue.Type() == tvtObject) {
+                                            kiriPad2A49Line += TJS_W("=OBJECT");
+                                        } else if(
+                                            kiriPad2A49MemberValue.Type() == tvtString) {
+                                            kiriPad2A49Line += TJS_W("=STRING '");
+                                            kiriPad2A49Line += ttstr(kiriPad2A49MemberValue);
+                                            kiriPad2A49Line += TJS_W("'");
+                                        } else {
+                                            kiriPad2A49Line += TJS_W("=PRESENT_NONOBJECT");
+                                        }
+                                        TVPAddImportantLog(kiriPad2A49Line);
+                                    }
+                                }
+                            }
+
+                            try {
+                                const ttstr kiriPad2A49FirstPath =
+                                    TVPSearchPlacedPath(TJS_W("first.ks"));
+                                TVPAddImportantLog(
+                                    kiriPad2A49FirstPath.IsEmpty()
+                                        ? TJS_W("(info) KiriPad 2A.49 first.ks placed path=NO")
+                                        : ttstr(TJS_W("(info) KiriPad 2A.49 first.ks placed path='")) +
+                                              kiriPad2A49FirstPath + TJS_W("'"));
+                            } catch(...) {
+                                TVPAddImportantLog(
+                                    TJS_W("(info) KiriPad 2A.49 first.ks placed path=THREW"));
+                            }
+
+                            TVPAddImportantLog(
+                                TJS_W("(info) KiriPad 2A.49 DrawDevice runtime probe: END"));
+                        }
+          '''
+
+          text = text[:close_brace] + inject + text[close_brace:]
+          path.write_text(text, encoding="utf-8")
+
+          patched = path.read_text(encoding="utf-8")
+          for token in (
+              marker,
+              'TJS_W("DrawDeviceD3D")',
+              'TJS_W("D3DLayer")',
+              'TJS_W("D3DEmotePlayer")',
+              'TJS_W("PassThroughDrawDevice")',
+              'TJS_W("BasicDrawDevice")',
+              "KiriPad 2A.49 mainWindow.drawDevice=",
+              "KiriPad 2A.49 KAGWindow.",
+              'TVPSearchPlacedPath(TJS_W("first.ks"))',
+              "DrawDevice runtime probe: END",
+          ):
+              if token not in patched:
+                  raise SystemExit(f"2A.49 verification failed: {token}")
+
+          print("Installed Phase 2A.49 DrawDevice/scenario runtime diagnostics.")
+
+          PY
+
       - name: Configure and build upstream iOS engine only
         shell: bash
         run: |
@@ -3643,7 +3951,7 @@ jobs:
           fi
           echo "Phase 2A.14 host + patched-engine markers confirmed in built executable."
 
-      - name: Verify Phase 2A.48 pixel-probe marker in app binary
+      - name: Verify Phase 2A.48/2A.49 diagnostic markers in app binary
         shell: bash
         run: |
           set -euo pipefail
@@ -3658,7 +3966,11 @@ jobs:
             echo "ERROR: Phase 2A.48 pixel-probe marker missing from built app"
             exit 1
           fi
-          echo "Phase 2A.48 pixel-probe marker confirmed in built app."
+          if ! grep -Fq "KiriPad 2A.49 DrawDevice runtime probe" "$STRINGS_DUMP"; then
+            echo "ERROR: Phase 2A.49 DrawDevice marker missing from built app"
+            exit 1
+          fi
+          echo "Phase 2A.48 and 2A.49 diagnostic markers confirmed in built app."
 
       - name: Collect source metadata
         if: always()
@@ -3683,7 +3995,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A48-runtime-unsigned-ipa
+          name: KiriPad-Phase2A49-runtime-unsigned-ipa
           path: artifacts/KiriPad-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
