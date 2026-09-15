@@ -1,4 +1,4 @@
-name: Build KiriPad Phase 2A.49b DrawDevice Runtime Probe
+name: Build KiriPad Phase 2A.50 DrawDevice Class And Asset Trace
 
 on:
   workflow_dispatch:
@@ -3204,6 +3204,194 @@ jobs:
 
           PY
 
+      - name: Phase 2A.50 trace DrawDevice class and actual asset streams
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd .engine-src/KrKr2-Next
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          # A) Identify the actual class of mainWindow.drawDevice.
+          script_path = Path("cpp/core/base/ScriptMgnIntf.cpp")
+          script = script_path.read_text(encoding="utf-8")
+
+          marker = "KiriPad 2A.50 drawDevice ClassInstanceInfo"
+          if marker in script:
+              raise SystemExit("2A.50 ScriptMgn marker already present unexpectedly")
+
+          needle = (
+              "                                        } else if(kiriPad2A49DDValue.Type() == tvtObject) {\n"
+              "                                            TVPAddImportantLog(\n"
+              "                                                TJS_W(\"(info) KiriPad 2A.49 mainWindow.drawDevice=OBJECT\"));\n"
+          )
+          if script.count(needle) != 1:
+              raise SystemExit(
+                  f"2A.50 drawDevice OBJECT branch count={script.count(needle)}"
+              )
+
+          extra = r'''
+                                                      // KiriPad 2A.50 drawDevice ClassInstanceInfo.
+                                                      tTJSVariantClosure kiriPad2A50DDClosure =
+                                                          kiriPad2A49DDValue.AsObjectClosureNoAddRef();
+                                                      iTJSDispatch2 *kiriPad2A50DDObj =
+                                                          kiriPad2A50DDClosure.Object;
+
+                                                      if(kiriPad2A50DDObj) {
+                                                          bool kiriPad2A50AnyClass = false;
+                                                          for(tjs_uint kiriPad2A50Index = 0;
+                                                              kiriPad2A50Index < 16;
+                                                              ++kiriPad2A50Index) {
+                                                              tTJSVariant kiriPad2A50ClassName;
+                                                              const tjs_error kiriPad2A50ClassEr =
+                                                                  kiriPad2A50DDObj->ClassInstanceInfo(
+                                                                      TJS_CII_GET,
+                                                                      kiriPad2A50Index,
+                                                                      &kiriPad2A50ClassName);
+
+                                                              if(TJS_FAILED(kiriPad2A50ClassEr))
+                                                                  break;
+
+                                                              kiriPad2A50AnyClass = true;
+                                                              ttstr kiriPad2A50Line(
+                                                                  TJS_W("(info) KiriPad 2A.50 drawDevice class["));
+                                                              kiriPad2A50Line +=
+                                                                  ttstr(static_cast<tjs_int64>(
+                                                                      kiriPad2A50Index));
+                                                              kiriPad2A50Line += TJS_W("]='");
+
+                                                              if(kiriPad2A50ClassName.Type() ==
+                                                                 tvtString) {
+                                                                  kiriPad2A50Line +=
+                                                                      ttstr(kiriPad2A50ClassName);
+                                                              } else {
+                                                                  kiriPad2A50Line +=
+                                                                      TJS_W("<non-string>");
+                                                              }
+
+                                                              kiriPad2A50Line += TJS_W("'");
+                                                              TVPAddImportantLog(kiriPad2A50Line);
+                                                          }
+
+                                                          if(!kiriPad2A50AnyClass) {
+                                                              TVPAddImportantLog(
+                                                                  TJS_W("(info) KiriPad 2A.50 drawDevice class=<none>"));
+                                                          }
+                                                      } else {
+                                                          TVPAddImportantLog(
+                                                              TJS_W("(info) KiriPad 2A.50 drawDevice object=NULL"));
+                                                      }
+          '''
+
+          script = script.replace(needle, needle + extra, 1)
+          script_path.write_text(script, encoding="utf-8")
+
+          # B) Trace actual archive stream opens for scenario/image/audio assets.
+          archive_path = None
+          archive = None
+          for p in Path("cpp").rglob("*.cpp"):
+              try:
+                  body = p.read_text(encoding="utf-8")
+              except Exception:
+                  continue
+              if (
+                  "tTVPArchive::CreateStream" in body
+                  and "CreateStreamByIndex" in body
+                  and "KiriPad 2A.36d transparent Yuzu MD5 alias" in body
+              ):
+                  archive_path = p
+                  archive = body
+                  break
+
+          if archive_path is None:
+              raise SystemExit("2A.50 archive implementation not found")
+
+          archive_marker = "KiriPad 2A.50 actual asset stream trace"
+          if archive_marker in archive:
+              raise SystemExit("2A.50 archive marker already present unexpectedly")
+
+          decl = re.search(
+              r"(?m)^[ \t]*tTJSBinaryStream\s*\*\s*"
+              r"tTVPArchive::CreateStream\s*\(\s*const\s+ttstr\s*&\s*name\s*\)",
+              archive,
+          )
+          if not decl:
+              raise SystemExit("2A.50 CreateStream declaration not found")
+
+          brace = archive.find("{", decl.end())
+          if brace < 0:
+              raise SystemExit("2A.50 CreateStream opening brace not found")
+
+          trace = r'''
+              // KiriPad 2A.50 actual asset stream trace.
+          #if defined(__APPLE__)
+              {
+                  const std::string kiriPad2A50Name = name.AsStdString();
+
+                  auto kiriPad2A50EndsWith =
+                      [](const std::string &s, const char *suffix) -> bool {
+                          const size_t n = std::char_traits<char>::length(suffix);
+                          return s.size() >= n &&
+                              s.compare(s.size() - n, n, suffix) == 0;
+                      };
+
+                  const bool kiriPad2A50Interesting =
+                      kiriPad2A50EndsWith(kiriPad2A50Name, ".ks")   ||
+                      kiriPad2A50EndsWith(kiriPad2A50Name, ".tlg")  ||
+                      kiriPad2A50EndsWith(kiriPad2A50Name, ".png")  ||
+                      kiriPad2A50EndsWith(kiriPad2A50Name, ".jpg")  ||
+                      kiriPad2A50EndsWith(kiriPad2A50Name, ".jpeg") ||
+                      kiriPad2A50EndsWith(kiriPad2A50Name, ".bmp")  ||
+                      kiriPad2A50EndsWith(kiriPad2A50Name, ".webp") ||
+                      kiriPad2A50EndsWith(kiriPad2A50Name, ".psb")  ||
+                      kiriPad2A50EndsWith(kiriPad2A50Name, ".ogg")  ||
+                      kiriPad2A50EndsWith(kiriPad2A50Name, ".wav")  ||
+                      kiriPad2A50EndsWith(kiriPad2A50Name, ".opus");
+
+                  static unsigned int kiriPad2A50TraceCount = 0;
+                  if(kiriPad2A50Interesting && kiriPad2A50TraceCount < 250) {
+                      ++kiriPad2A50TraceCount;
+                      spdlog::info(
+                          "KiriPad 2A.50 asset stream #{} logical='{}'",
+                          kiriPad2A50TraceCount,
+                          kiriPad2A50Name);
+                  }
+              }
+          #endif
+          '''
+
+          archive = archive[:brace + 1] + trace + archive[brace + 1:]
+          archive_path.write_text(archive, encoding="utf-8")
+
+          script_check = script_path.read_text(encoding="utf-8")
+          archive_check = archive_path.read_text(encoding="utf-8")
+
+          for token in (
+              "KiriPad 2A.50 drawDevice ClassInstanceInfo",
+              "ClassInstanceInfo(",
+              "TJS_CII_GET",
+              "KiriPad 2A.50 drawDevice class[",
+          ):
+              if token not in script_check:
+                  raise SystemExit(f"2A.50 ScriptMgn verification failed: {token}")
+
+          for token in (
+              "KiriPad 2A.50 actual asset stream trace",
+              "KiriPad 2A.50 asset stream #",
+              '".ks"',
+              '".tlg"',
+              '".png"',
+              '".ogg"',
+          ):
+              if token not in archive_check:
+                  raise SystemExit(f"2A.50 archive verification failed: {token}")
+
+          print(f"2A.50 patched DrawDevice class probe: {script_path}")
+          print(f"2A.50 patched asset stream trace: {archive_path}")
+
+          PY
+
       - name: Configure and build upstream iOS engine only
         shell: bash
         run: |
@@ -3779,6 +3967,46 @@ jobs:
             exit 1
           fi
 
+      - name: Verify Phase 2A.50 markers in upstream engine archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          files = [
+              p for p in Path(".engine-build").rglob("*")
+              if p.is_file()
+          ]
+
+          markers = [
+              "KiriPad 2A.50 drawDevice class[",
+              "KiriPad 2A.50 asset stream #",
+          ]
+
+          for marker in markers:
+              needles = (
+                  marker.encode("ascii"),
+                  marker.encode("utf-16le"),
+                  marker.encode("utf-32le"),
+              )
+              hit = None
+              for p in files:
+                  try:
+                      data = p.read_bytes()
+                  except Exception:
+                      continue
+                  if any(needle in data for needle in needles):
+                      hit = p
+                      break
+              if hit is None:
+                  raise SystemExit(
+                      f"ERROR: Phase 2A.50 marker missing from engine outputs: {marker}"
+                  )
+              print(f"Phase 2A.50 marker confirmed: {marker} -> {hit}")
+
+          PY
+
       - name: Phase 2A.48 add RGBA frame pixel diagnostics
         shell: bash
         run: |
@@ -4021,7 +4249,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: KiriPad-Phase2A49b-runtime-unsigned-ipa
+          name: KiriPad-Phase2A50-runtime-unsigned-ipa
           path: artifacts/KiriPad-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
